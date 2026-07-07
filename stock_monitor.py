@@ -73,6 +73,9 @@ RECEIVER   = "ack1000hu@gmail.com"
 # 리포트 발송 시각 (HH:MM)
 REPORT_TIMES = {"10:00", "12:00", "14:00", "15:20"}
 
+# 서킷브레이커 단계별 발동 기준 (전일대비 %, 단계) — 큰 낙폭부터 확인
+CIRCUIT_BREAKER_LEVELS = [(-20.0, 3), (-15.0, 2), (-8.0, 1)]
+
 # 주문이력 평가손익 리포트 대상 유저
 ORDER_HIST_REPORT_USER = "jsh77b@naver.com"
 
@@ -636,6 +639,54 @@ def send_report_email():
         print(f"  [리포트] 메일 발송 실패: {e}")
 
 
+def send_alert_email(subject: str, message: str):
+    """서킷브레이커 등 긴급 상황을 알리는 단순 텍스트 메일을 발송한다."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = SENDER
+    msg["To"]      = RECEIVER
+    msg.attach(MIMEText(message, "plain", "utf-8"))
+
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        ctx.set_ciphers('ALL:@SECLEVEL=0')
+        ctx.options |= 0x4
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:
+            smtp.login(SENDER, MAIL_PASS)
+            smtp.sendmail(SENDER, RECEIVER, msg.as_string())
+        print(f"  [알림] 메일 발송 완료 → {RECEIVER} ({subject})")
+    except Exception as e:
+        print(f"  [알림] 메일 발송 실패: {e}")
+
+
+def check_circuit_breaker(market: str, rate: float):
+    """
+    서킷브레이커 발동 여부를 확인하고, 당일 처음 감지된 단계면 메일로 알린다.
+    10분 주기 수집이라 정확한 발동 순간이 아닌 '기준 충족 감지' 시점 기준이다.
+    """
+    today = datetime.date.today().isoformat()
+
+    for threshold, level in CIRCUIT_BREAKER_LEVELS:
+        if rate > threshold:
+            continue
+
+        flag_file = f"/tmp/circuit_breaker_{market}_{level}_{today}.flag"
+        if os.path.exists(flag_file):
+            break  # 이미 오늘 해당 단계 알림 발송함
+
+        subject = f"[서킷브레이커 발동] {market} {level}단계 감지 ({rate:+.2f}%)"
+        message = (
+            f"{market} 지수가 전일 대비 {rate:+.2f}% 하락하여 "
+            f"서킷브레이커 {level}단계 기준({threshold:.0f}%)을 충족한 것으로 감지되었습니다.\n\n"
+            f"※ 10분 주기 감시 기준 감지이며, 정확한 공식 발동/해제 시각은 KRX 공지를 참고하세요."
+        )
+        send_alert_email(subject, message)
+        open(flag_file, "w").close()
+        break  # 가장 높은(심한) 단계 하나만 알림
+
+
 # ── 메인 실행 ─────────────────────────────────────────────────────────────────
 def run_once(save_hist: bool = False):
     cleanup_logs()
@@ -654,6 +705,12 @@ def run_once(save_hist: bool = False):
             today_data = rows[0]
             print_index(today_data)
             save_market_index(market, today_data)
+
+            price = float(today_data.get("tradePrice")  or 0)
+            chg   = float(today_data.get("changePrice") or 0)
+            prev  = price - chg
+            rate  = (chg / prev * 100) if prev != 0 else 0
+            check_circuit_breaker(market, rate)
         else:
             print("    → 데이터 없음")
     time.sleep(0.5)

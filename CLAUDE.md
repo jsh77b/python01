@@ -62,3 +62,10 @@
 
  완료 (2026-06-26)
 - 파일목록 완료 (2026-07-03)
+- 파이썬 프로젝트를 하나 만들꺼야 내용 확인 해서 만들어줘
+# -*- coding: utf- 완료 (2026-07-15)
+- `/workspace/chat/launch_claude_rc.py` --> 해당파일을 /w 완료 (2026-07-15)
+- python3 /workspace/python01/launch_claude_rc.py -- 완료 (2026-07-15)
+- python3 /workspace/python01/launch_claude_rc.py -- 완료 (2026-07-15)
+- python3 /workspace/python01/launch_claude_rc.py -- 완료 (2026-07-15)
+- python3 /workspace/python01/launch_claude_rc.py -- 완료 (2026-07-15)

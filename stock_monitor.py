@@ -71,7 +71,7 @@ MAIL_PASS  = os.getenv("STOCK_MAIL_PASS", "")
 RECEIVER   = "ack1000hu@gmail.com"
 
 # 리포트 발송 시각 (HH:MM)
-REPORT_TIMES = {"10:00", "12:00", "14:00", "15:20"}
+REPORT_TIMES = {"09:30", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "15:30"}
 
 # 서킷브레이커 단계별 발동 기준 (전일대비 %, 단계) — 큰 낙폭부터 확인
 CIRCUIT_BREAKER_LEVELS = [(-20.0, 3), (-15.0, 2), (-8.0, 1)]

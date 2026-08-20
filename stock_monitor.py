@@ -76,9 +76,6 @@ REPORT_TIMES = {"09:30", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "
 # 서킷브레이커 단계별 발동 기준 (전일대비 %, 단계) — 큰 낙폭부터 확인
 CIRCUIT_BREAKER_LEVELS = [(-20.0, 3), (-15.0, 2), (-8.0, 1)]
 
-# 주문이력 평가손익 리포트 대상 유저
-ORDER_HIST_REPORT_USER = "jsh77b@naver.com"
-
 
 # ── DB 설정 ───────────────────────────────────────────────────────────────────
 DB_HOST = "jsh77b1.cafe24app.com"
@@ -388,257 +385,8 @@ def print_stocks(stocks: list, show_net: bool = False):
             print(f"    {rank:>2}. {name:<14}  {price:>9,}원  {rate}")
 
 
-# ── 리포트 ────────────────────────────────────────────────────────────────────
-def query_common_stocks(category_a: str, category_b: str) -> list:
-    """공통 종목의 10시/12시/14시 현재가를 피벗으로 조회한다."""
-    try:
-        conn = _db_connect()
-        cur  = conn.cursor()
-        cur.execute("""
-            SELECT a.RANK_NO, a.STOCK_NAME,
-                   MAX(CASE WHEN HOUR(a.REG_DT) = 10 THEN a.CURRENT_PRICE END) AS p10,
-                   MAX(CASE WHEN HOUR(a.REG_DT) = 12 THEN a.CURRENT_PRICE END) AS p12,
-                   MAX(CASE WHEN HOUR(a.REG_DT) = 14 THEN a.CURRENT_PRICE END) AS p14
-            FROM TB_STOCK_RANKING_HIST a
-            WHERE a.CATEGORY = %s
-              AND DATE(a.REG_DT) = CURDATE()
-              AND a.STOCK_CODE IN (
-                  SELECT b.STOCK_CODE FROM TB_STOCK_RANKING_HIST b
-                  WHERE b.CATEGORY = %s
-                    AND DATE(b.REG_DT) = CURDATE()
-                    AND HOUR(b.REG_DT) = HOUR(a.REG_DT)
-              )
-            GROUP BY a.STOCK_CODE, a.RANK_NO, a.STOCK_NAME
-            ORDER BY MAX(ABS(a.NET_VALUE)) DESC
-        """, (category_a, category_b))
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"  [리포트 DB 오류] {e}")
-        return []
-
-
-def query_market_index():
-    """TB_MARKET_INDEX 에서 코스피/코스닥 지수를 조회한다."""
-    try:
-        conn = _db_connect()
-        cur  = conn.cursor()
-        cur.execute("""
-            SELECT MARKET_TYPE, CURRENT_PRICE, CHANGE_VAL, CHANGE_RATE, REG_DT
-            FROM   TB_MARKET_INDEX
-            ORDER  BY FIELD(MARKET_TYPE, 'KOSPI', 'KOSDAQ')
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"  [지수 DB 오류] {e}")
-        return []
-
-
-def query_user_set_list():
-    """TB_API_USER_SET 에서 전체 유저의 재무정보를 조회한다."""
-    try:
-        conn = _db_connect()
-        cur  = conn.cursor()
-        cur.execute("""
-            SELECT REG_ID, TOT_INS_AMT, PRSM_DPST_ASET_AMT
-            FROM   TB_API_USER_SET
-            WHERE  DEL_YN = 'N'
-            ORDER  BY REG_ID
-        """)
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"  [유저정보 DB 오류] {e}")
-        return []
-
-
-def query_order_hist_profit(reg_id: str) -> list:
-    """특정 유저의 미마감 주문이력을 종목별로 집계해 평가손익/손익율 계산용 원본을 조회한다."""
-    try:
-        conn = _db_connect()
-        cur  = conn.cursor()
-        cur.execute("""
-            SELECT j.JONGMOG_NM, o.JONGMOG_CD,
-                   SUM(o.BUY_PRICE * o.BUY_CNT) AS BUY_AMT,
-                   SUM(o.BUY_CNT)               AS BUY_CNT,
-                   j.CUR_PRICE
-            FROM   TB_API_ORDER_HIST o
-            JOIN   TB_API_JONGMOG j ON j.JONGMOG_CD = o.JONGMOG_CD
-            WHERE  o.REG_ID   = %s
-              AND  o.DEL_YN   = 'N'
-              AND  o.CLOSE_YN = 'N'
-            GROUP  BY o.JONGMOG_CD, j.JONGMOG_NM, j.CUR_PRICE
-            ORDER  BY BUY_AMT DESC
-        """, (reg_id,))
-        rows = cur.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"  [주문이력 DB 오류] {e}")
-        return []
-
-
-def send_report_email():
-    """공통 매수·매도 리포트를 메일로 발송한다."""
-    now_str  = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-    buy_rows        = query_common_stocks("FOR_BUY",  "INS_BUY")
-    sell_rows       = query_common_stocks("FOR_SELL", "INS_SELL")
-    user_rows       = query_user_set_list()
-    index_rows      = query_market_index()
-    order_hist_rows = query_order_hist_profit(ORDER_HIST_REPORT_USER)
-
-    def fmt_price(val):
-        return f"{int(val):,}" if val else "-"
-
-    def make_order_hist_table(rows):
-        if not rows:
-            return "<p>&#xC8FC;&#xBB38;&#xC774;&#xB825; &#xC5C6;&#xC74C;</p>"  # 주문이력 없음
-        html  = "<h3 style='color:#8e44ad;text-align:left;'>&#xC8FC;&#xBB38;&#xC774;&#xB825; &#xD3C9;&#xAC00;&#xC190;&#xC775;</h3>"
-        html += "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;font-size:16px;width:480px;'>"
-        html += ("<tr style='background:#f2f2f2;'>"
-                 "<th style='text-align:center;width:180px;'>&#xC885;&#xBAA9;&#xBA85;</th>"
-                 "<th style='text-align:center;width:150px;'>&#xD3C9;&#xAC00;&#xC190;&#xC775;</th>"
-                 "<th style='text-align:center;width:100px;'>&#xC190;&#xC775;&#xC728;</th>"
-                 "</tr>")
-        for name, _code, buy_amt, buy_cnt, cur_price in rows:
-            buy_amt_num   = float(buy_amt or 0)
-            eval_amt_num  = float(cur_price or 0) * float(buy_cnt or 0)
-            eval_profit   = eval_amt_num - buy_amt_num
-            rate          = (eval_profit / buy_amt_num * 100) if buy_amt_num != 0 else 0
-            color         = "#e74c3c" if eval_profit >= 0 else "#2980b9"
-            html += (f"<tr>"
-                     f"<td style='text-align:left;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px;'>{name or '-'}</td>"
-                     f"<td style='text-align:right;color:{color};'>{fmt_price(eval_profit)}</td>"
-                     f"<td style='text-align:right;color:{color};'>{rate:.2f}%</td>"
-                     f"</tr>")
-        html += "</table>"
-        return html
-
-    def make_table(rows, label):
-        if not rows:
-            return f"<p>{label} &#xC5C6;&#xC74C;</p>"
-        color = "#27ae60" if "BUY" in label else "#e74c3c"
-        html  = f"<h3 style='color:{color};text-align:left;'>{label}</h3>"
-        html += "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;font-size:16px;width:480px;'>"
-        html += ("<tr style='background:#f2f2f2;'>"
-                 "<th style='text-align:center;width:50px;'>&#xC21C;&#xC704;</th>"
-                 "<th style='text-align:center;width:160px;'>&#xC885;&#xBAA9;&#xBA85;</th>"
-                 "<th style='text-align:center;width:150px;'>&#xD604;&#xC7AC;&#xAC00;</th>"
-                 "<th style='text-align:center;width:80px;'>&#xC2DC;&#xAC04;</th>"
-                 "</tr>")
-        for rank, name, p10, p12, p14 in rows:
-            times  = [("10", p10), ("12", p12), ("14", p14)]
-            filled = [(t, p) for t, p in times if p]
-            span   = len(filled) if filled else 1
-            first  = True
-            for t_label, price in (filled if filled else [("10", None)]):
-                if first:
-                    html += (f"<tr>"
-                             f"<td rowspan='{span}' style='text-align:center;vertical-align:middle;'>{rank}</td>"
-                             f"<td rowspan='{span}' style='text-align:left;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;'>{name}</td>"
-                             f"<td style='text-align:right;'>{fmt_price(price)}</td>"
-                             f"<td style='text-align:center;'>{t_label}</td>"
-                             f"</tr>")
-                    first = False
-                else:
-                    html += (f"<tr>"
-                             f"<td style='text-align:right;'>{fmt_price(price)}</td>"
-                             f"<td style='text-align:center;'>{t_label}</td>"
-                             f"</tr>")
-        html += "</table>"
-        return html
-
-    buy_label  = "&#xACF5;&#xD1B5; &#xC21C;&#xB9E4;&#xC218; &#xC885;&#xBAA9;"
-    sell_label = "&#xACF5;&#xD1B5; &#xC21C;&#xB9E4;&#xB3C4; &#xC885;&#xBAA9;"
-
-    def make_user_table(rows):
-        if not rows:
-            return "<p>&#xC720;&#xC800; &#xC815;&#xBCF4; &#xC5C6;&#xC74C;</p>"
-        html  = "<h3 style='color:#2980b9;text-align:left;'>&#xC720;&#xC800;&#xBCC4; &#xC7AC;&#xBB34;&#xD604;&#xD669;</h3>"
-        html += "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;font-size:16px;width:480px;'>"
-        html += ("<tr style='background:#f2f2f2;'>"
-                 "<th style='text-align:center;width:200px;'>&#xC720;&#xC800;ID</th>"
-                 "<th style='text-align:center;width:150px;'>&#xC218;&#xC775;&#xAE08;&#xC561;</th>"
-                 "<th style='text-align:center;width:130px;'>&#xC218;&#xC775;&#xC728;</th>"
-                 "</tr>")
-        for reg_id, ins_amt, prsm_amt in rows:
-            ins_num   = float(ins_amt  or 0)
-            prsm_num  = float(prsm_amt or 0)
-            profit    = prsm_num - ins_num
-            rate      = (profit / ins_num * 100) if ins_num != 0 else 0
-            color     = "#e74c3c" if profit >= 0 else "#2980b9"
-            html += (f"<tr>"
-                     f"<td style='text-align:center;'>{reg_id or '-'}</td>"
-                     f"<td style='text-align:right;color:{color};'>{fmt_price(profit)}</td>"
-                     f"<td style='text-align:right;color:{color};'>{rate:.2f}%</td>"
-                     f"</tr>")
-        html += "</table>"
-        return html
-
-    def make_index_table(rows):
-        if not rows:
-            return "<p>&#xC2DC;&#xC7A5; &#xC9C0;&#xC218; &#xC5C6;&#xC74C;</p>"
-        reg_dt_str = str(rows[0][4]) if rows and rows[0][4] else ""
-        html  = f"<h3 style='color:#555;text-align:left;'>&#xC2DC;&#xC7A5; &#xC9C0;&#xC218; <span style='font-size:13px;color:#999;font-weight:normal;'>{reg_dt_str}</span></h3>"
-        html += "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse;font-size:16px;width:480px;'>"
-        html += ("<tr style='background:#f2f2f2;'>"
-                 "<th style='text-align:center;width:120px;'>&#xC9C0;&#xC218;&#xBA85;</th>"
-                 "<th style='text-align:center;width:140px;'>&#xD604;&#xC7AC;&#xAC00;</th>"
-                 "<th style='text-align:center;width:140px;'>&#xC804;&#xC77C;&#xB300;&#xBE44;</th>"
-                 "<th style='text-align:center;width:80px;'>&#xB4F1;&#xB77D;&#xC728;</th>"
-                 "</tr>")
-        for market_type, cur_price, change_val, change_rate, _ in rows:
-            chg = float(change_val or 0)
-            color = "#e74c3c" if chg > 0 else "#2980b9" if chg < 0 else ""
-            sign  = "+" if chg > 0 else ""
-            rate  = float(change_rate or 0) * 100
-            html += (f"<tr>"
-                     f"<td style='text-align:center;'>{market_type}</td>"
-                     f"<td style='text-align:right;color:{color};'>{fmt_price(cur_price)}</td>"
-                     f"<td style='text-align:right;color:{color};'>{sign}{fmt_price(change_val)}</td>"
-                     f"<td style='text-align:right;color:{color};'>{sign}{rate:.2f}%</td>"
-                     f"</tr>")
-        html += "</table>"
-        return html
-
-    body  = "<html><head><meta charset='utf-8'></head><body style='font-family:sans-serif;'>"
-    body += f"<h2 style='text-align:left;'>&#xC99D;&#xC2DC; &#xB9AC;&#xD3EC;&#xD2B8; &mdash; {now_str}</h2>"
-    body += make_index_table(index_rows)
-    body += "<br>"
-    body += make_user_table(user_rows)
-    body += "<br>"
-    body += make_order_hist_table(order_hist_rows)
-    body += "<br>"
-    body += make_table(buy_rows,  buy_label)
-    body += "<br>"
-    body += make_table(sell_rows, sell_label)
-    body += "<p style='text-align:left;color:gray;font-size:12px;'>HOONE.NET &#xC790;&#xB3D9; &#xB9AC;&#xD3EC;&#xD2B8;</p>"
-    body += "</body></html>"
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"[Stock Report] {now_str}"
-    msg["From"]    = SENDER
-    msg["To"]      = RECEIVER
-    msg.attach(MIMEText(body, "html", "utf-8"))
-
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        ctx.set_ciphers('ALL:@SECLEVEL=0')
-        ctx.options |= 0x4
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:
-            smtp.login(SENDER, MAIL_PASS)
-            smtp.sendmail(SENDER, RECEIVER, msg.as_string())
-        print(f"  [리포트] 메일 발송 완료 → {RECEIVER}")
-    except Exception as e:
-        print(f"  [리포트] 메일 발송 실패: {e}")
-
-
+# ── 알림 메일 ──────────────────────────────────────────────────────────────────
+# 지정시각 증시 리포트 메일은 cafe24_jsh77b1/services/stockReportMail.js 로 이전됨
 def send_alert_email(subject: str, message: str):
     """서킷브레이커 등 긴급 상황을 알리는 단순 텍스트 메일을 발송한다."""
     msg = MIMEMultipart("alternative")
@@ -784,16 +532,14 @@ if __name__ == "__main__":
                     sent_times.clear()
                     last_date = today
 
-                # 리포트 발송 + 이력 저장 (REPORT_TIMES 해당 시각, 중복 방지)
+                # 이력 저장 시각 여부 (REPORT_TIMES 해당 시각, 중복 방지) — 리포트 메일 발송은 Node로 이전됨
                 is_report_time = hhmm in REPORT_TIMES and hhmm not in sent_times
                 if is_report_time:
-                    print(f"[{now:%Y-%m-%d %H:%M}] 리포트 발송 + 이력 저장 시작")
+                    print(f"[{now:%Y-%m-%d %H:%M}] 이력 저장 시작")
                     sent_times.add(hhmm)
 
                 if is_market_open():
                     run_once(save_hist=is_report_time)
-                    if is_report_time:
-                        send_report_email()
                     next_time = now + datetime.timedelta(minutes=args.interval)
                     print(f"다음 수집: {args.interval}분 후 ({next_time:%H:%M})")
                     time.sleep(args.interval * 60)
@@ -813,13 +559,12 @@ if __name__ == "__main__":
         hhmm  = now.strftime("%H:%M")
         today = now.strftime("%Y-%m-%d")
 
-        # 리포트 시각 여부 확인 + 플래그 파일로 중복 방지
+        # 이력 저장 시각 여부 확인 + 플래그 파일로 중복 방지 (리포트 메일 발송은 Node로 이전됨)
         flag_file     = f"/tmp/stock_report_{today}_{hhmm.replace(':', '')}.sent"
         is_report_time = hhmm in REPORT_TIMES and not os.path.exists(flag_file)
 
         run_once(save_hist=is_report_time)
 
         if is_report_time:
-            send_report_email()
-            open(flag_file, "w").close()  # 발송 완료 플래그 생성
-            print(f"  [리포트] 플래그 파일 생성: {flag_file}")
+            open(flag_file, "w").close()  # 이력 저장 완료 플래그 생성
+            print(f"  [이력] 플래그 파일 생성: {flag_file}")

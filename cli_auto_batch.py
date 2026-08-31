@@ -110,15 +110,15 @@ def db_connect():
     )
 
 
-# ── 이전 작업 이력 조회 ───────────────────────────────────────────────────────
-def get_history(cursor, project: str) -> str:
+# ── 이전 작업 이력 조회 (같은 등록자만) ────────────────────────────────────────
+def get_history(cursor, project: str, reg_id: str) -> str:
     cursor.execute("""
         SELECT QUESTION
              , LEFT(ANSWER, 200)
         FROM TB_CLI_AUTO
-        WHERE PROJECT=%s AND STATUS=%s
+        WHERE PROJECT=%s AND REG_ID=%s AND STATUS=%s
         ORDER BY REG_DATE DESC LIMIT 3
-    """, (project, ST_DONE))
+    """, (project, reg_id, ST_DONE))
     rows = cursor.fetchall()
     if not rows:
         return ""
@@ -189,7 +189,7 @@ def run_batch():
 
             # 준비 건 조회
             cursor.execute("""
-                SELECT SEQ, PROJECT, QUESTION
+                SELECT SEQ, PROJECT, QUESTION, REG_ID
                 FROM TB_CLI_AUTO
                 WHERE STATUS=%s
                 ORDER BY REG_DATE ASC
@@ -201,7 +201,7 @@ def run_batch():
                 return
 
             in_progress = set()
-            for row_id, project, question in rows:
+            for row_id, project, question, reg_id in rows:
                 if project in in_progress:
                     log(f"  [SKIP] id={row_id} project={project} — 이미 진행중인 작업 있음")
                     continue
@@ -221,7 +221,7 @@ def run_batch():
                 in_progress.add(project)
 
                 try:
-                    history = get_history(cursor, project)
+                    history = get_history(cursor, project, reg_id)
                     context = CLAUDE_INSTRUCTION + history + f"새 작업: {question}"
 
                     # subprocess 실행 전 DB 재연결 (idle 연결 끊김 방지)

@@ -63,6 +63,7 @@ SELECT AA.JONGMOG_CD
      , (SELECT IFNULL(SUM(BUY_CNT),0) FROM TB_API_ORDER_HIST X WHERE X.JONGMOG_CD = AA.JONGMOG_CD AND X.CLOSE_YN = 'N' AND X.ORDER_STAT = 'AD_240_11') AS ORDER_CNT_SUM
      , PER.CUR_PER_MIN
      , PER.CUR_PER_MAX
+     , MAX(AA.TRDE_QTY) AS TRDE_QTY_TODAY
      , AA.DIFF_QTY
      , AA.QTY_STATUS
 FROM (
@@ -74,6 +75,7 @@ FROM (
          , @cnt := IF(@prev_trend = TREND AND @prev_code = JONGMOG_CD, @cnt + 1, 1) AS TREND_COUNT
          , @prev_trend := TREND
          , @prev_code := JONGMOG_CD
+         , TRDE_QTY
          , DIFF_QTY
          , QTY_STATUS
     FROM (
@@ -87,6 +89,7 @@ FROM (
                     ELSE 'ZERO'
                END AS TREND
              , @prev := CUR_PRICE
+             , TRDE_QTY
              , TRDE_QTY - @prev_qty AS DIFF_QTY
              , CASE WHEN TRDE_QTY - @prev_qty - @prev_diff_qty > 0 THEN 'UP'
                     WHEN TRDE_QTY - @prev_qty - @prev_diff_qty < 0 THEN 'DOWN'
@@ -143,6 +146,27 @@ def fetch_trend_signals(conn, stdt):
         return cur.fetchall()
 
 
+# 전일 총거래량(TRDE_QTY_MAX = 그날 마지막 누적거래량) 조회 - 오늘 누적거래량과 비교해서
+# 거래량 변화가 "평소 대비" 큰지 판단하는 근거로 사용
+def fetch_prev_day_volume_map(conn, today_dash):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(REG_DATE) AS PREV_DATE FROM TB_API_CUR_PRICE_DAY WHERE REG_DATE < %(today)s",
+            {"today": today_dash},
+        )
+        row = cur.fetchone()
+        prev_date = row["PREV_DATE"] if row else None
+        if not prev_date:
+            return {}
+
+        cur.execute(
+            "SELECT JONGMOG_CD, MAX(TRDE_QTY_MAX) AS PREV_TRDE_QTY_MAX "
+            "FROM TB_API_CUR_PRICE_DAY WHERE REG_DATE = %(prev_date)s GROUP BY JONGMOG_CD",
+            {"prev_date": prev_date},
+        )
+        return {r["JONGMOG_CD"]: r["PREV_TRDE_QTY_MAX"] for r in cur.fetchall()}
+
+
 def build_prompt(row):
     trend_nm = "상승" if row["TREND"] == "UP" else "하락"
     qty_status_nm = {"UP": "증가", "DOWN": "감소", "START": "거래시작"}.get(row["QTY_STATUS"], str(row["QTY_STATUS"]))
@@ -156,6 +180,12 @@ def build_prompt(row):
     if row.get("CUR_PER") is not None:
         lines.append(f"- 당일 최저~최고가 구간 내 현재가 위치: {row['CUR_PER']}% (0%=당일최저, 100%=당일최고)")
     lines.append(f"- 직전 대비 거래량 변화: {int(row['DIFF_QTY']):,}주 ({qty_status_nm})")
+    if row.get("TRDE_QTY_TODAY") is not None:
+        lines.append(f"- 오늘 누적 거래량: {int(row['TRDE_QTY_TODAY']):,}주")
+    prev_vol = row.get("PREV_TRDE_QTY_MAX")
+    if prev_vol:
+        pct = round(100 * row["TRDE_QTY_TODAY"] / prev_vol)
+        lines.append(f"- 전일 총 거래량 대비: {pct}% ({int(prev_vol):,}주)")
     if row.get("ORDER_CNT_SUM") and row["ORDER_CNT_SUM"] > 0:
         lines.append(f"- 보유 중인 매수 주문: {row['ORDER_CNT_SUM']}건, 최근 매수가 {row['ORDER_AMT_LAST']:,}")
     lines.append("")
@@ -196,14 +226,18 @@ def main():
 
     today = date.today()
     stdt = today.strftime("%Y%m%d")
+    today_dash = today.strftime("%Y-%m-%d")
 
     conn = get_connection()
     try:
         rows = fetch_trend_signals(conn, stdt)
         log(f"TREND 신호종목 조회 완료: {len(rows)}건 (기준 TREND_COUNT >= {TREND_COUNT_THRESHOLD})")
 
+        prev_volume_map = fetch_prev_day_volume_map(conn, today_dash)
+
         registered = 0
         for row in rows:
+            row["PREV_TRDE_QTY_MAX"] = prev_volume_map.get(row["JONGMOG_CD"])
             try:
                 prompt = build_prompt(row)
                 cli_auto_seq = insert_cli_auto(conn, prompt)

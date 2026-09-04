@@ -14,8 +14,8 @@ PROJECT는 "chat"으로 등록한다 - 배치 완료 시 PROJECT 작업 디렉�
 
 [실행방법 / cron 등록 예]
   STOCK_DB_PASS=xxx python3 trend_signal_batch.py
-  # 장중 3회(10시/12시/14시): crontab에 아래처럼 등록
-  # 0 10,12,14 * * 1-5 STOCK_DB_PASS=xxx /usr/bin/python3 /workspace/python01/trend_signal_batch.py >> /workspace/python01/log/trend_signal_$(date +\\%Y-\\%m-\\%d).log 2>&1
+  # 장중 2회(12시/14시), 주말/공휴일 제외: crontab에 아래처럼 등록
+  # 0 12,14 * * 1-5 STOCK_DB_PASS=xxx /usr/bin/python3 /workspace/python01/trend_signal_batch.py >> /workspace/python01/log/trend_signal_$(date +\\%Y-\\%m-\\%d).log 2>&1
 ================================================================================
 """
 
@@ -36,6 +36,31 @@ TREND_COUNT_THRESHOLD = 6  # 연속 5분봉 상승/하락 횟수 기준 (자동�
 
 SIGNAL_TYPE_UP = "TREND_UP"
 SIGNAL_TYPE_DN = "TREND_DN"
+
+# KRX 공식 휴장일 — stock_monitor.py의 MARKET_HOLIDAYS와 동일 목록(음력 공휴일은 매년 갱신 필요, 두 파일 함께 갱신)
+MARKET_HOLIDAYS = {
+    "2026-01-01",  # 신정
+    "2026-02-16",  # 설날 연휴
+    "2026-02-17",  # 설날
+    "2026-02-18",  # 설날 연휴
+    "2026-03-02",  # 삼일절 대체휴일 (3/1 일요일)
+    "2026-05-05",  # 어린이날
+    "2026-05-25",  # 부처님오신날 대체 (5/24 일요일)
+    "2026-08-17",  # 광복절 대체 (8/15 토요일)
+    "2026-09-23",  # 추석 연휴
+    "2026-09-24",  # 추석 연휴
+    "2026-09-25",  # 추석
+    "2026-10-09",  # 한글날
+    "2026-12-25",  # 크리스마스
+    "2026-12-31",  # 연말 휴장
+}
+
+
+def is_market_day(today):
+    """평일(월~금)이고 공휴일이 아닌 경우에만 True"""
+    if today.weekday() >= 5:  # 토(5)·일(6)
+        return False
+    return today.strftime("%Y-%m-%d") not in MARKET_HOLIDAYS
 
 
 def log(msg):
@@ -225,6 +250,11 @@ def main():
         sys.exit(1)
 
     today = date.today()
+
+    if not is_market_day(today):
+        log(f"휴장일({today.strftime('%Y-%m-%d')}, 주말 또는 공휴일)이라 실행하지 않습니다.")
+        sys.exit(0)
+
     stdt = today.strftime("%Y%m%d")
     today_dash = today.strftime("%Y-%m-%d")
 

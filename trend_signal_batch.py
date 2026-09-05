@@ -25,10 +25,10 @@ from datetime import date, datetime
 
 import pymysql
 
-DB_HOST = "jsh77b1.cafe24app.com"
-DB_USER = "jsh77b1"
+DB_HOST = "jsh77b.cafe24.com"
+DB_USER = "jsh77b"
 DB_PASS = os.getenv("STOCK_DB_PASS", "")
-DB_NAME = "jsh77b1"
+DB_NAME = "jsh77b"
 
 CLI_AUTO_PROJECT = "chat"
 CLI_AUTO_REG_ID = "trendSignalBatch"

@@ -78,10 +78,10 @@ CIRCUIT_BREAKER_LEVELS = [(-20.0, 3), (-15.0, 2), (-8.0, 1)]
 
 
 # ── DB 설정 ───────────────────────────────────────────────────────────────────
-DB_HOST = "jsh77b1.cafe24app.com"
-DB_USER = "jsh77b1"
+DB_HOST = "jsh77b.cafe24.com"
+DB_USER = "jsh77b"
 DB_PASS = os.getenv("STOCK_DB_PASS", "")
-DB_NAME = "jsh77b1"
+DB_NAME = "jsh77b"
 DB_PORT = 3306
 
 

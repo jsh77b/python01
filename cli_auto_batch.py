@@ -41,10 +41,10 @@ except ModuleNotFoundError:
 
 
 # ── DB 설정 ───────────────────────────────────────────────────────────────────
-DB_HOST = "jsh77b1.cafe24app.com"
-DB_USER = "jsh77b1"
+DB_HOST = "jsh77b.cafe24.com"
+DB_USER = "jsh77b"
 DB_PASS = os.getenv("CLI_AUTO_DB_PASS", "")
-DB_NAME = "jsh77b1"
+DB_NAME = "jsh77b"
 DB_PORT = 3306
 
 # ── 공통코드 (TB_COMM_CD GRP_CD='AD_320') ────────────────────────────────────

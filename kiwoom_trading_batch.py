@@ -50,9 +50,9 @@ DB_USER = "jsh77b"
 DB_PASS = os.getenv("STOCK_DB_PASS", "")
 DB_NAME = "jsh77b"
 
-SMTP_HOST = "smtp.cafe24.com"
+SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
-MAIL_SENDER = "jsh77b@jsh77b1.cafe24.com"
+MAIL_SENDER = "ack1000hu@gmail.com"
 MAIL_RECEIVER = "ack1000hu@gmail.com"
 MAIL_PASS = os.getenv("STOCK_MAIL_PASS", "")
 
@@ -656,11 +656,7 @@ def send_mail(subject, text):
     msg["To"] = MAIL_RECEIVER
     msg["Subject"] = Header(subject, "utf-8")
 
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    ctx.set_ciphers("ALL:@SECLEVEL=0")
-    ctx.options |= 0x4  # OP_LEGACY_SERVER_CONNECT
+    ctx = ssl.create_default_context()
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:
         smtp.login(MAIL_SENDER, MAIL_PASS)

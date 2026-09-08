@@ -64,9 +64,9 @@ except ModuleNotFoundError:
 
 
 # ── 메일 설정 ─────────────────────────────────────────────────────────────────
-SMTP_HOST  = "smtp.cafe24.com"
+SMTP_HOST  = "smtp.gmail.com"
 SMTP_PORT  = 465
-SENDER     = "jsh77b@jsh77b1.cafe24.com"
+SENDER     = "ack1000hu@gmail.com"
 MAIL_PASS  = os.getenv("STOCK_MAIL_PASS", "")
 RECEIVER   = "ack1000hu@gmail.com"
 
@@ -396,11 +396,7 @@ def send_alert_email(subject: str, message: str):
     msg.attach(MIMEText(message, "plain", "utf-8"))
 
     try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
-        ctx.set_ciphers('ALL:@SECLEVEL=0')
-        ctx.options |= 0x4
+        ctx = ssl.create_default_context()
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:
             smtp.login(SENDER, MAIL_PASS)
             smtp.sendmail(SENDER, RECEIVER, msg.as_string())

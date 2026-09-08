@@ -76,9 +76,9 @@ DB_PORT = 3306
 
 # ── 메일 설정 ──────────────────────────────────────────────────────────────────
 
-SMTP_HOST = "smtp.cafe24.com"
+SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
-SENDER    = "jsh77b@jsh77b1.cafe24.com"
+SENDER    = "ack1000hu@gmail.com"
 PASSWORD  = os.getenv("CAMPING_MAIL_PASS", "")
 RECEIVER  = "ack1000hu@gmail.com"
 
@@ -184,11 +184,7 @@ def send_mail(available_dates: list[dict]):
     msg["From"]    = SENDER
     msg["To"]      = RECEIVER
 
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    ctx.set_ciphers('ALL:@SECLEVEL=0')
-    ctx.options |= 0x4
+    ctx = ssl.create_default_context()
 
     try:
         with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:

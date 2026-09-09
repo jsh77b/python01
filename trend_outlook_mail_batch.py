@@ -229,7 +229,7 @@ def analyze_trend(conn, hoone_user_id):
 # ------------------------------------------------------------------
 # routes/stockAnalysis.js::buildTrendMailHtml 포팅
 # ------------------------------------------------------------------
-def build_trend_mail_html(result, today_text):
+def build_trend_mail_html(result, today_text, exchange_rates=None):
     TD_NM = 'align="left"   style="border:1px solid #ccc;padding:4px 8px;font-size:13px;text-align:left;"'
     TD = 'align="center" style="border:1px solid #ccc;padding:4px 8px;font-size:13px;text-align:center;"'
     TH = 'align="center" style="border:1px solid #ccc;padding:4px 8px;font-size:13px;background:#f2f2f2;text-align:center;"'
@@ -265,6 +265,20 @@ def build_trend_mail_html(result, today_text):
         return (f"<table {TBL}><tr><th {TH}>종목명</th><th {TH}>30일등락</th><th {TH}>10일등락</th>"
                 f"<th {TH}>5일등락</th><th {TH}>3일등락</th></tr>{body}</table>")
 
+    country_nm = {"USD": "달러 (USD)", "JPY": "엔화 (JPY)"}
+
+    def exchange_html(rates):
+        if not rates:
+            return ""
+        rows = "".join(
+            f"<tr><td {TD_NM}>{country_nm.get(r['country'], r['country'])}</td>"
+            f"<td {TD}>{r['rate']:,.2f}원</td>"
+            f"<td {TD}>{rate_html(r['change_pct']) if r['change_pct'] is not None else '-'}</td></tr>"
+            for r in rates
+        )
+        return (f'<h3 style="font-size:13px;margin:16px 0 4px;">■ 환율 ({rates[0]["reg_date"]} 기준)</h3>'
+                f"<table {TBL}><tr><th {TH}>통화</th><th {TH}>환율</th><th {TH}>전일대비</th></tr>{rows}</table>")
+
     down_list = [r for r in result["down"] if r["downCnt"] >= 5]
     up_list = [r for r in result["up"] if r["upCnt"] >= 5]
     rebound_list = sorted(
@@ -283,6 +297,7 @@ def build_trend_mail_html(result, today_text):
     html = '<div style="font-family:sans-serif;font-size:13px;color:#222;">'
     html += f'<h2 style="font-size:15px;margin:0 0 4px;">[등락분석] {today_text}</h2>'
     html += f'<p style="margin:0 0 12px;">분석 종목: {result["total"]}개</p>'
+    html += exchange_html(exchange_rates)
 
     html += f'<h3 style="font-size:13px;margin:16px 0 4px;">■ 연속하락 ({len(down_list)}개)</h3>'
     html += table_html(
@@ -361,6 +376,44 @@ def fetch_index_rates(conn, reg_id):
     kosdaq_values = [float(r["KOSDAQ_PRICE"]) for r in rows]
 
     return {"kospi": calc_rates(kospi_values), "kosdaq": calc_rates(kosdaq_values)}
+
+
+def fetch_exchange_rates(conn):
+    """국가(통화)별 최신 환율 + 전일 환율 조회 (TB_HANTO_EXCHANGE_LATE_DAY)"""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNTRY, REG_DATE, MAX(EXCHANGE_LATE) AS EXCHANGE_LATE "
+            "FROM TB_HANTO_EXCHANGE_LATE_DAY "
+            "WHERE DEL_YN = 'N' "
+            "AND   COUNTRY != '' "
+            "AND   EXCHANGE_LATE > 0 "
+            "GROUP BY COUNTRY, REG_DATE "
+            "ORDER BY COUNTRY, REG_DATE DESC"
+        )
+        rows = cur.fetchall()
+
+    by_country = {}
+    for r in rows:
+        by_country.setdefault(r["COUNTRY"], []).append(r)
+
+    result = []
+    for country, recs in by_country.items():
+        latest = recs[0]
+        prev = recs[1] if len(recs) > 1 else None
+        rate = float(latest["EXCHANGE_LATE"])
+        prev_rate = float(prev["EXCHANGE_LATE"]) if prev else None
+        change_pct = round((rate - prev_rate) / prev_rate * 100, 2) if prev_rate else None
+        result.append({
+            "country": country,
+            "reg_date": latest["REG_DATE"],
+            "rate": rate,
+            "change_pct": change_pct,
+        })
+
+    # 보기 좋게 USD, JPY 순으로, 그 외는 이름순
+    order = {"USD": 0, "JPY": 1}
+    result.sort(key=lambda x: (order.get(x["country"], 99), x["country"]))
+    return result
 
 
 def build_outlook_prompt(row, signal_type, index_info):
@@ -504,7 +557,10 @@ def main():
         result = analyze_trend(conn, HOONE_USER_ID)
         log(f"등락분석 완료: 분석종목 {result['total']}건")
 
-        html = build_trend_mail_html(result, today_dash)
+        exchange_rates = fetch_exchange_rates(conn)
+        log(f"환율정보 조회: {[(r['country'], r['rate']) for r in exchange_rates]}")
+
+        html = build_trend_mail_html(result, today_dash, exchange_rates)
         try:
             send_mail(f"[등락분석] {today_dash}", html)
             log("메일 발송 완료")

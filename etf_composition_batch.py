@@ -85,9 +85,12 @@ def build_prompt(jongmog_nm, jongmog_cd):
     lines.append(f'국내 상장 ETF "{jongmog_nm}"({jongmog_cd})의 구성종목(보유 상위 종목)을 알려줘.')
     lines.append("")
     lines.append("- 실시간 검색이 필요하면 WebSearch 도구로 운용사 공식 페이지나 ETF 정보 사이트를 조회해줘.")
-    lines.append("- 상위 10개 종목명과 비중(%)을 표 형식으로 정리해줘.")
+    lines.append("- 상위 10개 종목명과 비중(%)을 아래와 같은 마크다운 표 형식으로만 답변해줘(다른 설명 문구 없이 표만).")
+    lines.append("| 순위 | 종목명 | 비중(%) |")
+    lines.append("|---|---|---|")
+    lines.append("| 1 | 삼성전자 | 28.6 |")
     lines.append("- 매수/매도를 추천하지 말고, 구성종목 정보만 사실대로 전달해줘.")
-    lines.append("- 답변은 결과 텍스트만 출력하고, 인사말이나 작업 설명은 붙이지 마.")
+    lines.append("- 답변은 표만 출력하고, 인사말이나 작업 설명은 붙이지 마.")
 
     return "\n".join(lines)
 

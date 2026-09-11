@@ -107,5 +107,21 @@ def main():
         conn.close()
 
 
+# 2026.09.11 배치관리(TB_BATCH_MASTER) 연동 - 사용여부 체크 + 상태 보고
+import batch_status
+
+BATCH_NM = "schedule_alarm_batch.py"
+
+
 if __name__ == "__main__":
-    main()
+    if not batch_status.is_enabled(BATCH_NM):
+        batch_status.log_skip(BATCH_NM)
+        sys.exit(0)
+
+    batch_status.mark_start(BATCH_NM)
+    try:
+        main()
+        batch_status.mark_done(BATCH_NM)
+    except Exception as e:
+        batch_status.mark_failed(BATCH_NM, str(e))
+        raise

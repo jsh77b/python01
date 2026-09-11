@@ -25,6 +25,10 @@ import time
 import subprocess
 from datetime import datetime, date, timedelta
 
+import batch_status
+
+BATCH_NM = "cli_auto_batch.py"
+
 # pymysql 로드 (없으면 /tmp에 자동 다운로드)
 try:
     import pymysql
@@ -288,13 +292,29 @@ if __name__ == "__main__":
         log("자동 실행 시작 — 1분 간격 (Ctrl+C로 종료)")
         try:
             while True:
-                try:
-                    run_batch()
-                except Exception as e:
-                    log(f"[오류] run_batch 예외: {e}")
+                if batch_status.is_enabled(BATCH_NM):
+                    batch_status.mark_start(BATCH_NM)
+                    try:
+                        run_batch()
+                        batch_status.mark_done(BATCH_NM)
+                    except Exception as e:
+                        batch_status.mark_failed(BATCH_NM, str(e))
+                        log(f"[오류] run_batch 예외: {e}")
+                else:
+                    batch_status.log_skip(BATCH_NM)
                 time.sleep(60)
         except KeyboardInterrupt:
             log("종료")
             sys.exit(0)
     else:
-        run_batch()
+        if not batch_status.is_enabled(BATCH_NM):
+            batch_status.log_skip(BATCH_NM)
+            sys.exit(0)
+
+        batch_status.mark_start(BATCH_NM)
+        try:
+            run_batch()
+            batch_status.mark_done(BATCH_NM)
+        except Exception as e:
+            batch_status.mark_failed(BATCH_NM, str(e))
+            raise

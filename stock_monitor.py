@@ -48,6 +48,10 @@ import ssl
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
+import batch_status
+
+BATCH_NM = "stock_monitor.py"
+
 # pymysql 로드 (없으면 /tmp에 자동 다운로드)
 try:
     import pymysql
@@ -535,7 +539,16 @@ if __name__ == "__main__":
                     sent_times.add(hhmm)
 
                 if is_market_open():
-                    run_once(save_hist=is_report_time)
+                    if batch_status.is_enabled(BATCH_NM):
+                        batch_status.mark_start(BATCH_NM)
+                        try:
+                            run_once(save_hist=is_report_time)
+                            batch_status.mark_done(BATCH_NM)
+                        except Exception as e:
+                            batch_status.mark_failed(BATCH_NM, str(e))
+                            raise
+                    else:
+                        batch_status.log_skip(BATCH_NM)
                     next_time = now + datetime.timedelta(minutes=args.interval)
                     print(f"다음 수집: {args.interval}분 후 ({next_time:%H:%M})")
                     time.sleep(args.interval * 60)
@@ -559,7 +572,17 @@ if __name__ == "__main__":
         flag_file     = f"/tmp/stock_report_{today}_{hhmm.replace(':', '')}.sent"
         is_report_time = hhmm in REPORT_TIMES and not os.path.exists(flag_file)
 
-        run_once(save_hist=is_report_time)
+        if not batch_status.is_enabled(BATCH_NM):
+            batch_status.log_skip(BATCH_NM)
+            sys.exit(0)
+
+        batch_status.mark_start(BATCH_NM)
+        try:
+            run_once(save_hist=is_report_time)
+            batch_status.mark_done(BATCH_NM)
+        except Exception as e:
+            batch_status.mark_failed(BATCH_NM, str(e))
+            raise
 
         if is_report_time:
             open(flag_file, "w").close()  # 이력 저장 완료 플래그 생성

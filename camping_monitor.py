@@ -50,6 +50,10 @@ import smtplib
 import requests    # HTTP 요청 라이브러리 (웹사이트 API 호출)
 from email.mime.text import MIMEText
 
+import batch_status
+
+BATCH_NM = "camping_monitor.py"
+
 # pymysql 로드 (없으면 /tmp에 자동 다운로드)
 try:
     import pymysql
@@ -615,7 +619,23 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    if not batch_status.is_enabled(BATCH_NM):
+        batch_status.log_skip(BATCH_NM)
+        sys.exit(0)
+
     if args.loop:
-        run_loop(interval_minutes=args.interval, weeks_ahead=args.weeks)
+        batch_status.mark_start(BATCH_NM)
+        try:
+            run_loop(interval_minutes=args.interval, weeks_ahead=args.weeks)
+            batch_status.mark_done(BATCH_NM)
+        except Exception as e:
+            batch_status.mark_failed(BATCH_NM, str(e))
+            raise
     else:
-        run_once(weeks_ahead=args.weeks)
+        batch_status.mark_start(BATCH_NM)
+        try:
+            run_once(weeks_ahead=args.weeks)
+            batch_status.mark_done(BATCH_NM)
+        except Exception as e:
+            batch_status.mark_failed(BATCH_NM, str(e))
+            raise

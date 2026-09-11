@@ -345,6 +345,13 @@ def query_get_monitor_list():
     return sql, []
 
 
+# 2026.09.11 사용자별 실제 감시종목 집합(REG_ID -> {JONGMOG_CD}) - 현재가는 종목당 한 번만 조회하려고
+# monitor_rows를 전체 사용자 통합으로 가져오지만, 매수/매도 판단은 본인이 감시하는 종목만 하도록 별도 조회
+def query_get_monitor_codes_by_user():
+    sql = "SELECT REG_ID, JONGMOG_CD FROM TB_API_JONGMOG_MONITOR_YN WHERE 1=1 AND DEL_YN = 'N'"
+    return sql, []
+
+
 def query_set_order_list(jongmog_cd, user_id):
     sql = (
         "SELECT AOH.JONGMOG_CD"
@@ -1547,14 +1554,19 @@ def execute_order_decision(conn, user_info, decision):
     return None
 
 
-def run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user, test_mode):
+def run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user, test_mode,
+                           user_monitor_code_map=None):
     daily_streak_map = get_daily_streak_map(conn)
     log(f"일봉 연속등락 맵 조회 완료 count={len(daily_streak_map)}")
+    user_monitor_code_map = user_monitor_code_map or {}
 
     results = []
     for user_info in users:
         reg_id = get_row_value(user_info, "REG_ID")
         price_map = current_price_maps_by_user.get(reg_id, {})
+        # 2026.09.11 monitor_rows는 현재가 조회 효율을 위해 전체 사용자 통합 목록이라,
+        # 매수/매도 판단은 본인이 실제로 감시하는 종목만 대상으로 함
+        own_codes = user_monitor_code_map.get(reg_id, set())
 
         stock_profit_map = {}
         try:
@@ -1564,6 +1576,9 @@ def run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user,
 
         for row in monitor_rows:
             stock_code = get_row_value(row, "JONGMOG_CD")
+            if stock_code not in own_codes:
+                continue
+
             stock_name = get_row_value(row, "JONGMOG_NM")
             current_price = price_map.get(stock_code)
             item = {"regId": reg_id, "stockCode": stock_code, "decision": None, "orderResult": None, "error": None}
@@ -1664,6 +1679,20 @@ def get_monitor_rows(conn):
     return rows
 
 
+# 2026.09.11 사용자별 감시종목 집합 조회 - {REG_ID: {JONGMOG_CD, ...}}
+def get_user_monitor_code_map(conn):
+    sql, params = query_get_monitor_codes_by_user()
+    rows = fetch_all(conn, sql, params)
+    code_map = {}
+    for row in rows:
+        reg_id = get_row_value(row, "REG_ID")
+        stock_code = get_row_value(row, "JONGMOG_CD")
+        if not has_value(reg_id) or not has_value(stock_code):
+            continue
+        code_map.setdefault(reg_id, set()).add(stock_code)
+    return code_map
+
+
 # ------------------------------------------------------------------
 # 메인 오케스트레이션 (Node runCurrentPriceBiz 포팅)
 # ------------------------------------------------------------------
@@ -1684,6 +1713,7 @@ def run_current_price_biz(conn):
     users = list(get_api_user_set_rows(conn, USER_ID_FILTER))
     log(f"사용자 설정 목록 조회 완료 userCount={len(users)}")
     monitor_rows = get_monitor_rows(conn)
+    user_monitor_code_map = get_user_monitor_code_map(conn)
 
     user_results = []
     current_price_user_info = None
@@ -1722,7 +1752,8 @@ def run_current_price_biz(conn):
         sync_totals["error"] += item.get("errorCount", 0)
     log(f"주문 상태 동기화 완료 {sync_totals}")
 
-    buy_sell_results = run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user, TEST_MODE)
+    buy_sell_results = run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user, TEST_MODE,
+                                              user_monitor_code_map)
     buy_cnt = sum(1 for r in buy_sell_results if r.get("decision") and r["decision"]["action"] == "BUY_EXEC")
     sell_cnt = sum(1 for r in buy_sell_results if r.get("decision") and r["decision"]["action"] == "SELL_EXEC")
     wait_cnt = sum(1 for r in buy_sell_results if r.get("decision") and r["decision"]["action"] == "WAIT")

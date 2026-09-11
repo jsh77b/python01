@@ -249,7 +249,14 @@ if __name__ == "__main__":
     batch_status.mark_start(BATCH_NM)
     try:
         main()
-        batch_status.mark_done(BATCH_NM)
+    except SystemExit as e:
+        if e.code:
+            batch_status.mark_failed(BATCH_NM, f"sys.exit({e.code})")
+        else:
+            batch_status.mark_done(BATCH_NM)
+        raise
     except Exception as e:
         batch_status.mark_failed(BATCH_NM, str(e))
         raise
+    else:
+        batch_status.mark_done(BATCH_NM)

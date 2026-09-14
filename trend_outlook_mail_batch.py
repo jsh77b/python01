@@ -54,7 +54,11 @@ SIGNAL_LABELS = {
     "REVERSE":   "상승후하락",
     "CONSEC_UP": "연속상승(5일+)",
     "CONSEC_DN": "연속하락(5일+)",
+    "TREND_UP":  "장중연속상승",
+    "TREND_DN":  "장중연속하락",
 }
+
+OUTLOOK_HISTORY_LIMIT = 30  # 같은 종목의 과거 전망 이력 참조 개수
 
 
 def log(msg):
@@ -416,7 +420,28 @@ def fetch_exchange_rates(conn):
     return result
 
 
-def build_outlook_prompt(row, signal_type, index_info):
+def fetch_outlook_history(conn, jongmog_cd, limit=OUTLOOK_HISTORY_LIMIT):
+    """같은 종목의 과거 전망 이력(완료된 답변만) 최근 N건 조회 (ETF 구성종목은 성격이 달라 제외)"""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT O.SIGNAL_TYPE
+                 , DATE_FORMAT(O.REG_DATE, '%%Y-%%m-%%d') AS REG_DATE
+                 , C.ANSWER
+            FROM   TB_STOCK_OUTLOOK O
+            JOIN   TB_CLI_AUTO C ON O.CLI_AUTO_SEQ = C.SEQ
+            WHERE  O.JONGMOG_CD = %(cd)s
+            AND    O.SIGNAL_TYPE != 'ETF_COMP'
+            AND    C.STATUS = 'AD_320_12'
+            ORDER BY O.REG_DATE DESC, O.SEQ DESC
+            LIMIT %(lim)s
+            """,
+            {"cd": jongmog_cd, "lim": limit},
+        )
+        return cur.fetchall()
+
+
+def build_outlook_prompt(row, signal_type, index_info, history=None):
     signal_nm = SIGNAL_LABELS.get(signal_type, signal_type)
     lines = []
 
@@ -442,12 +467,21 @@ def build_outlook_prompt(row, signal_type, index_info):
         lines.append(f"- 코스피: 1일 {k['rate1']}%, 3일 {k['rate3']}%, 5일 {k['rate5']}%, 10일 {k['rate10']}%, 30일 {k['rate30']}%")
         lines.append(f"- 코스닥: 1일 {q['rate1']}%, 3일 {q['rate3']}%, 5일 {q['rate5']}%, 10일 {q['rate10']}%, 30일 {q['rate30']}%")
 
+    if history:
+        lines.append("")
+        lines.append(f"[이 종목의 과거 전망 이력 - 오래된순, 최근 {len(history)}건 참고용]")
+        for h in reversed(history):
+            h_signal_nm = SIGNAL_LABELS.get(h["SIGNAL_TYPE"], h["SIGNAL_TYPE"])
+            lines.append(f"- {h['REG_DATE']} ({h_signal_nm}): {h['ANSWER']}")
+
     lines.append("")
     lines.append("이 종목을 사거나 팔라고 추천하지 말고, 위 등락률 숫자 패턴만 놓고 다음 세 가지를 3~5문장으로 답해줘.")
     lines.append("1) 이 흐름이 단기 되돌림에 가까운지, 추세 전환 초입에 가까운지 숫자 근거로 해석")
     lines.append("2) 이 신호가 이어질지 무효화될지 판단하려면 앞으로 어떤 지표(예: rate3의 부호 유지 여부 등)를 지켜봐야 하는지")
     if has_index:
         lines.append("3) 종목의 등락률을 코스피/코스닥 지수 등락률과 비교했을 때, 시장 전체 흐름 대비 이 종목이 상대적으로 강한지 약한지(상대강도)")
+    if history:
+        lines.append("과거 전망 이력이 있다면 이번 판단이 그 흐름과 일관되는지, 달라졌다면 무엇이 달라졌는지도 짧게 언급해줘.")
     lines.append("뉴스나 재무 정보는 모른다는 전제로, 순수 등락률 패턴 해석에만 집중해줘.")
     lines.append("답변은 결과 텍스트만 출력하고, 인사말이나 작업 설명은 붙이지 마.")
     lines.append("문장이 끝날 때마다(마침표 뒤) 줄바꿈을 넣어서 한 줄에 한 문장씩 보이게 작성해줘.")
@@ -518,7 +552,13 @@ def register_signal_stock_outlooks(conn, trend_result, reg_date, reg_id):
     registered = 0
     for t in targets:
         try:
-            prompt = build_outlook_prompt(t["row"], t["signalType"], index_info)
+            try:
+                history = fetch_outlook_history(conn, t["row"]["cd"])
+            except Exception as e:
+                log(f"[STOCK_OUTLOOK] 과거 전망 이력 조회 실패: {t['row'].get('cd')} - {e}")
+                history = []
+
+            prompt = build_outlook_prompt(t["row"], t["signalType"], index_info, history)
             cli_auto_seq = insert_cli_auto(conn, prompt)
             insert_stock_outlook(conn, t["row"]["cd"], t["signalType"], cli_auto_seq, reg_date)
             conn.commit()

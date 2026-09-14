@@ -130,9 +130,10 @@ def query_order_hist_profit(conn, reg_id):
                    j.CUR_PRICE
             FROM   TB_API_ORDER_HIST o
             JOIN   TB_API_JONGMOG j ON j.JONGMOG_CD = o.JONGMOG_CD
-            WHERE  o.REG_ID   = %s
-              AND  o.DEL_YN   = 'N'
-              AND  o.CLOSE_YN = 'N'
+            WHERE  o.REG_ID     = %s
+              AND  o.DEL_YN     = 'N'
+              AND  o.CLOSE_YN   = 'N'
+              AND  o.ORDER_STAT != 'AD_240_10'
             GROUP  BY o.JONGMOG_CD, j.JONGMOG_NM, j.CUR_PRICE
             ORDER  BY BUY_AMT DESC
             """,

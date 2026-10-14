@@ -1615,7 +1615,8 @@ def run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user,
 # 2026.10.14 매수 예약 - TB_API_ORDER_HIST ORDER_STAT=AD_240_15(예약)
 #  - 장중(09:00~15:30) 현재가 <= 예약가(BUY_PRICE) 이면 그 시점 현재가 지정가로 1회 매수
 #    -> 같은 ROW 를 AD_240_10(접수)로 갱신, 이후 체결은 기존 주문상태 동기화가 AD_240_11 로 처리
-#  - 장 종료(15:30) 이후 남은 예약 / 전일 이전 예약 -> AD_240_14(종료)
+#  - 만료일시(RESERVE_ED_DT) 지난 예약 -> AD_240_14(종료)
+#    (등록 시 PHP buyReserve.php 에서 당일 또는 다음 거래일 15:30 으로 지정)
 #  - 주문 실패 -> AD_240_12(취소)
 #  - 기존 자동매매 판단과 독립 (매수횟수 제한 등 미적용)
 # ------------------------------------------------------------------
@@ -1623,14 +1624,14 @@ RESERVE_START_HHMM = 900
 RESERVE_END_HHMM = 1530
 
 
-def query_expire_buy_reserve(all_today):
+def query_expire_buy_reserve():
+    # 만료일시 없는 건(컬럼 추가 전 등록분)은 등록일 당일 15:30 기준
     sql = (
         "UPDATE TB_API_ORDER_HIST SET ORDER_STAT = 'AD_240_14', UPD_DT = NOW(),"
         " RESULT_MSG = LEFT(CONCAT('[예약만료] ', RESULT_MSG), 2000)"
         " WHERE 1=1 AND DEL_YN = 'N' AND ORDER_STAT = 'AD_240_15'"
+        " AND IFNULL(RESERVE_ED_DT, CONCAT(DATE(REG_DT), ' 15:30:00')) <= NOW()"
     )
-    if not all_today:
-        sql += " AND REG_DT < CURDATE()"
     return sql, []
 
 
@@ -1639,7 +1640,8 @@ def query_get_buy_reserve_list():
         "SELECT AOH.IDX, AOH.JONGMOG_CD, AOH.BUY_PRICE, AOH.BUY_CNT, AOH.REG_ID,"
         " (SELECT MAX(X.JONGMOG_NM) FROM TB_API_JONGMOG X WHERE X.JONGMOG_CD = AOH.JONGMOG_CD) AS JONGMOG_NM"
         " FROM TB_API_ORDER_HIST AOH WHERE 1=1"
-        " AND AOH.DEL_YN = 'N' AND AOH.ORDER_STAT = 'AD_240_15' AND AOH.REG_DT >= CURDATE()"
+        " AND AOH.DEL_YN = 'N' AND AOH.ORDER_STAT = 'AD_240_15'"
+        " AND IFNULL(AOH.RESERVE_ED_DT, CONCAT(DATE(AOH.REG_DT), ' 15:30:00')) > NOW()"
         " ORDER BY AOH.IDX"
     )
     return sql, []
@@ -1674,9 +1676,9 @@ def run_buy_reserve(conn, users, current_price_maps_by_user):
     hhmm = now.hour * 100 + now.minute
     result = {"target": 0, "exec": 0, "wait": 0, "fail": 0, "expire": 0}
 
-    # 만료 처리 (전일 이전 예약은 항상, 장 종료 이후에는 당일 예약 전체)
+    # 만료 처리 (만료일시 지난 예약)
     if LIVE:
-        result["expire"] = execute_write(conn, *query_expire_buy_reserve(hhmm >= RESERVE_END_HHMM))["affectedRows"]
+        result["expire"] = execute_write(conn, *query_expire_buy_reserve())["affectedRows"]
 
     if not (RESERVE_START_HHMM <= hhmm < RESERVE_END_HHMM):
         return result

@@ -7,7 +7,7 @@
 목적
   - 감시목록 > 단타분석 화면에서 [분석요청] 하면 TB_SCALP_SET.REQ_STAT = AD_320_10(준비)
   - 이 배치가 요청 건을 AD_320_11(시작)로 선점 후 감시목록 전 종목 5분봉(ka10080)을 조회해
-    종목별 단타 지표 + 사용자 조건(시가-N% 매수, +M% 익절, 15:15 정리) 백테스트 결과를
+    종목별 단타 지표 + 사용자 조건(시가-N원 매수, +M원 익절, 15:15 정리) 백테스트 결과를
     TB_SCALP_RESULT 에 저장하고 AD_320_12(완료) / AD_320_14(실패) 처리
 
 지표
@@ -15,8 +15,9 @@
   - MIN5_RANGE  : 10시 이후 5분봉 평균 변동폭%
   - TRADE_AMT   : 일평균 거래대금(억)
   - PERIOD_RATE : 분석기간 첫날 시가 -> 마지막 종가 등락률%
-  - 백테스트    : 09:30~14:30 사이 저가가 시가*(1-BUY_DROP%) 이하면 그 가격에 매수,
-                  이후 고가가 매수가*(1+TAKE_PROFIT%) 이상이면 익절, 아니면 15:15 종가 정리
+  - 백테스트    : 09:30~14:30 사이 저가가 (시가 - BUY_DROP_AMT원) 이하면 그 가격에 매수,
+                  이후 고가가 (매수가 + TAKE_PROFIT_AMT원) 이상이면 익절, 아니면 15:15 종가 정리
+                  수량 = BUY_AMT(매수금액) / 매수가, 손익금액(PROFIT_AMT) = 수량 x 차익 - 비용
                   비용 : ETF 0.03% (매매세 없음) / 주식 0.23% (수수료+매매세)
 
 실행방법
@@ -77,7 +78,7 @@ def fetch_min5(user, stock_code, pages):
     return rows
 
 
-def analyze(rows, days, buy_drop, take_profit, fee):
+def analyze(rows, days, drop_amt, profit_amt, buy_amt, fee):
     """5분봉으로 단타 지표 + 백테스트 계산 (분석 불가 시 None)"""
     by_day = defaultdict(list)
     for d, t, o, h, lo, c, v in rows:
@@ -87,7 +88,7 @@ def analyze(rows, days, buy_drop, take_profit, fee):
     if len(day_list) < 5:
         return None
 
-    day_range, trade_amt, mid_range, results = [], [], [], []
+    day_range, trade_amt, mid_range, results, amounts = [], [], [], [], []
     for d in day_list:
         bars = sorted(by_day[d])
         high = max(x[2] for x in bars)
@@ -96,21 +97,22 @@ def analyze(rows, days, buy_drop, take_profit, fee):
         trade_amt.append(sum(x[4] * x[5] for x in bars))
         mid_range += [(x[2] - x[3]) / x[3] * 100 for x in bars if x[0] >= "1000"]
 
-        # 백테스트 : 시가 대비 buy_drop% 하락 시 매수 -> take_profit% 익절, 미도달 시 마지막 봉 종가 정리
-        open_price = bars[0][1]
-        buy_price = open_price * (1 - buy_drop / 100)
-        pos = None
-        for x in bars:
-            if pos is None:
-                if "0930" <= x[0] < "1430" and x[3] <= buy_price:
-                    pos = buy_price
-                continue
-            if x[2] >= pos * (1 + take_profit / 100):
-                results.append(take_profit - fee)
-                pos = -1
+        # 백테스트 : 시가 대비 drop_amt원 하락 시 매수 -> profit_amt원 상승 시 익절, 미도달 시 마지막 봉 종가 정리
+        buy_price = bars[0][1] - drop_amt
+        qty = int(buy_amt // buy_price) if buy_price > 0 else 0
+        if qty <= 0:
+            continue
+        sell_price = None
+        for i, x in enumerate(bars):
+            if "0930" <= x[0] < "1430" and x[3] <= buy_price:
+                # 매수 이후 봉에서 익절가 도달 시 익절가, 아니면 마지막 봉 종가
+                target = buy_price + profit_amt
+                sell_price = target if any(y[2] >= target for y in bars[i + 1:]) else bars[-1][4]
                 break
-        if pos is not None and pos > 0:
-            results.append((bars[-1][4] / pos - 1) * 100 - fee)
+        if sell_price is not None:
+            rate = (sell_price / buy_price - 1) * 100 - fee
+            results.append(rate)
+            amounts.append(qty * buy_price * rate / 100)
 
     first = sorted(by_day[day_list[0]])[0]
     last_bars = sorted(by_day[day_list[-1]])
@@ -123,6 +125,7 @@ def analyze(rows, days, buy_drop, take_profit, fee):
         "TRADE_CNT": len(results),
         "WIN_CNT": sum(1 for r in results if r > 0),
         "PROFIT_SUM": round(sum(results), 2),
+        "PROFIT_AMT": int(round(sum(amounts))),
         "LAST_DT": day_list[-1],
         "LAST_OPEN": last_bars[0][1],
         "LAST_CLOSE": last_bars[-1][4],
@@ -134,8 +137,9 @@ def run_user(conn, user, setting):
     cur = conn.cursor()
     reg_id = setting["REG_ID"]
     days = max(5, min(int(setting["ANAL_DAYS"]), 22))
-    buy_drop = float(setting["BUY_DROP"])
-    take_profit = float(setting["TAKE_PROFIT"])
+    drop_amt = int(setting["BUY_DROP_AMT"])
+    profit_amt = int(setting["TAKE_PROFIT_AMT"])
+    buy_amt = int(setting["BUY_AMT"])
 
     cur.execute(
         "SELECT M.JONGMOG_CD, IFNULL(J.JONGMOG_NM, '') JONGMOG_NM FROM TB_API_JONGMOG_MONITOR_YN M"
@@ -151,7 +155,7 @@ def run_user(conn, user, setting):
         code, name = s["JONGMOG_CD"], s["JONGMOG_NM"]
         fee = FEE_ETF if name.upper().startswith(ETF_PREFIX) else FEE_STOCK
         try:
-            r = analyze(fetch_min5(user, code, pages), days, buy_drop, take_profit, fee)
+            r = analyze(fetch_min5(user, code, pages), days, drop_amt, profit_amt, buy_amt, fee)
         except Exception as e:
             log(f"  {code} {name} 조회 실패: {e}")
             r = None
@@ -166,10 +170,10 @@ def run_user(conn, user, setting):
     for r in results:
         cur.execute(
             "INSERT INTO TB_SCALP_RESULT (REG_ID, JONGMOG_CD, JONGMOG_NM, DAY_CNT, DAY_RANGE, MIN5_RANGE, TRADE_AMT, PERIOD_RATE,"
-            " TRADE_CNT, WIN_CNT, PROFIT_SUM, FEE_RATE, LAST_DT, LAST_OPEN, LAST_CLOSE, REG_DT)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+            " TRADE_CNT, WIN_CNT, PROFIT_SUM, PROFIT_AMT, FEE_RATE, LAST_DT, LAST_OPEN, LAST_CLOSE, REG_DT)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
             (reg_id, r["JONGMOG_CD"], r["JONGMOG_NM"], r["DAY_CNT"], r["DAY_RANGE"], r["MIN5_RANGE"], r["TRADE_AMT"],
-             r["PERIOD_RATE"], r["TRADE_CNT"], r["WIN_CNT"], r["PROFIT_SUM"], r["FEE_RATE"], r["LAST_DT"],
+             r["PERIOD_RATE"], r["TRADE_CNT"], r["WIN_CNT"], r["PROFIT_SUM"], r["PROFIT_AMT"], r["FEE_RATE"], r["LAST_DT"],
              r["LAST_OPEN"], r["LAST_CLOSE"]),
         )
     conn.commit()
@@ -201,7 +205,7 @@ def main():
         if cur.rowcount != 1 and not force_id:
             continue
 
-        log(f"단타분석 시작 {reg_id} 기간 {setting['ANAL_DAYS']}일 시가-{setting['BUY_DROP']}% 매수 +{setting['TAKE_PROFIT']}% 익절")
+        log(f"단타분석 시작 {reg_id} 기간 {setting['ANAL_DAYS']}일 시가-{setting['BUY_DROP_AMT']}원 매수 +{setting['TAKE_PROFIT_AMT']}원 익절 매수금액 {setting['BUY_AMT']}원")
         try:
             user = users.get(reg_id)
             if user is None:

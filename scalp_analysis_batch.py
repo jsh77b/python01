@@ -34,6 +34,9 @@ from datetime import datetime
 import requests
 
 import avg_price_batch as b
+import batch_status
+
+BATCH_NM = "scalp_analysis_batch.py"
 
 CHART_ENDPOINT = "/api/dostk/chart"
 ETF_PREFIX = ("KODEX", "TIGER", "RISE", "HANARO", "ACE", "SOL", "KBSTAR", "PLUS", "KOSEF", "ARIRANG", "TIMEFOLIO", "WON", "1Q")
@@ -195,6 +198,10 @@ def main():
     if not targets:
         return
 
+    # 배치관리(TB_BATCH_MASTER) 상태는 요청 건이 있을 때만 시작/완료 보고 (1분마다 빈 실행은 보고 안 함)
+    batch_status.mark_start(BATCH_NM)
+    fail_cnt = 0
+
     users = {u["REG_ID"]: u for u in b.get_active_users(conn)}
     for setting in targets:
         reg_id = setting["REG_ID"]
@@ -221,8 +228,17 @@ def main():
             cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_14', DONE_DT = NOW(), RESULT_MSG = %s, UPD_DT = NOW() WHERE REG_ID = %s",
                         (f"분석실패 {str(e)[:400]}", reg_id))
             log(f"단타분석 실패 {reg_id}: {e}")
+            fail_cnt += 1
         conn.commit()
+    if fail_cnt:
+        batch_status.mark_failed(BATCH_NM, f"분석실패 {fail_cnt}건")
+    else:
+        batch_status.mark_done(BATCH_NM)
 
 
 if __name__ == "__main__":
+    # 배치관리 화면에서 미사용이면 실행 안 함
+    if not batch_status.is_enabled(BATCH_NM):
+        batch_status.log_skip(BATCH_NM)
+        sys.exit(0)
     main()

@@ -1,9 +1,12 @@
--- 2026.10.14 단타 분석 설정 (하락/익절/매수 조건은 금액(원) 기준) / 결과 (감시목록 > 단타분석 화면, scalp_analysis_batch.py)
+-- 2026.10.14 단타 분석 설정 (하락/익절은 UNIT_GUBN 에 따라 % 또는 금액(원), 매수는 금액(원)) / 결과 (감시목록 > 단타분석 화면, scalp_analysis_batch.py)
 
 -- 사용자별 단타 분석 조건 + 분석요청 상태 (REQ_STAT : TB_COMM_CD AD_320 준비/시작/완료/취소/실패)
 CREATE TABLE IF NOT EXISTS TB_SCALP_SET (
     REG_ID       VARCHAR(100)  NOT NULL                COMMENT '사용자ID',
     ANAL_DAYS    INT           NOT NULL DEFAULT 20     COMMENT '분석기간(거래일)',
+    UNIT_GUBN       CHAR(1)    NOT NULL DEFAULT 'P'    COMMENT '하락/익절 기준 (P:%, W:금액)',
+    BUY_DROP_PER    DECIMAL(5,2) NOT NULL DEFAULT 2.00 COMMENT '매수조건 시가대비 하락%',
+    TAKE_PROFIT_PER DECIMAL(5,2) NOT NULL DEFAULT 1.20 COMMENT '익절%',
     BUY_DROP_AMT    INT        NOT NULL DEFAULT 1000   COMMENT '매수조건 시가대비 하락금액(원)',
     TAKE_PROFIT_AMT INT        NOT NULL DEFAULT 1000   COMMENT '익절금액(원)',
     BUY_AMT         INT        NOT NULL DEFAULT 500000 COMMENT '매수금액(원, 수량=매수금액/예약가)',

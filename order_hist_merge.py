@@ -139,13 +139,13 @@ def main():
         last = rows[0]
         idxs = [r["IDX"] for r in rows]
         msg = f"주문이력 1ROW 통합 {today} (원본 {len(rows)}건, 키움 잔고 기준)"
-        # 2. 통합 1ROW 등록
+        # 2. 통합 1ROW 등록 (ORDER_NO 가 비어있으면 종목상세 화면에서 매도대상으로 안 보여서 MERGE_YYYYMMDD 지정)
         cur.execute(
             """INSERT INTO TB_API_ORDER_HIST (JONGMOG_CD, BASIC_PRICE, BUY_PRICE, BUY_CNT, BUY_POINT, BUY_ORDER_CNT,
                    SELL_BASIC_PRICE, SELL_PRICE, SELL_CNT, SELL_POINT, SELL_ORDER_CNT, ORDER_STAT, COMMISSION, TAX,
                    ACCNO, ORDER_NO, RESULT_MSG, ORDER_STATUS, CLOSE_YN, CLOSE_DT, DEL_YN, REG_DT, REG_ID, UPD_DT)
-               VALUES (%s,%s,%s,%s,0,0, 0,0,0,0,0,'AD_240_11',%s,%s, %s,'',%s,'','N',NULL,'N',%s,%s,NOW())""",
-            (code, avg, avg, qty, last["COMMISSION"], last["TAX"], last["ACCNO"], msg, last["REG_DT"], reg_id),
+               VALUES (%s,%s,%s,%s,0,0, 0,0,0,0,0,'AD_240_11',%s,%s, %s,%s,%s,'','N',NULL,'N',%s,%s,NOW())""",
+            (code, avg, avg, qty, last["COMMISSION"], last["TAX"], last["ACCNO"], f"MERGE_{today}", msg, last["REG_DT"], reg_id),
         )
         new_idx = cur.lastrowid
         # 3. 기존 ROW 취소/삭제 처리 (이력 유지, 수익통계·재매수 판단 제외)

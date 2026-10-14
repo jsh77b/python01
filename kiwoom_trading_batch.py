@@ -1612,6 +1612,122 @@ def run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user,
 
 
 # ------------------------------------------------------------------
+# 2026.10.14 매수 예약 - TB_API_ORDER_HIST ORDER_STAT=AD_240_15(예약)
+#  - 장중(09:00~15:30) 현재가 <= 예약가(BUY_PRICE) 이면 그 시점 현재가 지정가로 1회 매수
+#    -> 같은 ROW 를 AD_240_10(접수)로 갱신, 이후 체결은 기존 주문상태 동기화가 AD_240_11 로 처리
+#  - 장 종료(15:30) 이후 남은 예약 / 전일 이전 예약 -> AD_240_14(종료)
+#  - 주문 실패 -> AD_240_12(취소)
+#  - 기존 자동매매 판단과 독립 (매수횟수 제한 등 미적용)
+# ------------------------------------------------------------------
+RESERVE_START_HHMM = 900
+RESERVE_END_HHMM = 1530
+
+
+def query_expire_buy_reserve(all_today):
+    sql = (
+        "UPDATE TB_API_ORDER_HIST SET ORDER_STAT = 'AD_240_14', UPD_DT = NOW(),"
+        " RESULT_MSG = LEFT(CONCAT('[예약만료] ', RESULT_MSG), 2000)"
+        " WHERE 1=1 AND DEL_YN = 'N' AND ORDER_STAT = 'AD_240_15'"
+    )
+    if not all_today:
+        sql += " AND REG_DT < CURDATE()"
+    return sql, []
+
+
+def query_get_buy_reserve_list():
+    sql = (
+        "SELECT AOH.IDX, AOH.JONGMOG_CD, AOH.BUY_PRICE, AOH.BUY_CNT, AOH.REG_ID,"
+        " (SELECT MAX(X.JONGMOG_NM) FROM TB_API_JONGMOG X WHERE X.JONGMOG_CD = AOH.JONGMOG_CD) AS JONGMOG_NM"
+        " FROM TB_API_ORDER_HIST AOH WHERE 1=1"
+        " AND AOH.DEL_YN = 'N' AND AOH.ORDER_STAT = 'AD_240_15' AND AOH.REG_DT >= CURDATE()"
+        " ORDER BY AOH.IDX"
+    )
+    return sql, []
+
+
+def query_claim_buy_reserve(idx):
+    # 중복 실행 방지 - 예약 상태인 경우에만 접수로 선점
+    sql = ("UPDATE TB_API_ORDER_HIST SET ORDER_STAT = 'AD_240_10', UPD_DT = NOW()"
+           " WHERE IDX = %s AND ORDER_STAT = 'AD_240_15'")
+    return sql, [idx]
+
+
+def query_update_buy_reserve_exec(idx, order_price, order_no, accno, msg):
+    sql = (
+        "UPDATE TB_API_ORDER_HIST SET BASIC_PRICE = %s, BUY_PRICE = %s, ORDER_NO = %s, ACCNO = %s,"
+        " RESULT_MSG = LEFT(CONCAT(%s, ' / ', RESULT_MSG), 2000), REG_DT = NOW(), UPD_DT = NOW()"
+        " WHERE IDX = %s"
+    )
+    return sql, [order_price, order_price, order_no, accno, msg, idx]
+
+
+def query_update_buy_reserve_fail(idx, msg):
+    sql = (
+        "UPDATE TB_API_ORDER_HIST SET ORDER_STAT = 'AD_240_12', UPD_DT = NOW(),"
+        " RESULT_MSG = LEFT(CONCAT(%s, ' / ', RESULT_MSG), 2000) WHERE IDX = %s"
+    )
+    return sql, [msg, idx]
+
+
+def run_buy_reserve(conn, users, current_price_maps_by_user):
+    now = datetime.now()
+    hhmm = now.hour * 100 + now.minute
+    result = {"target": 0, "exec": 0, "wait": 0, "fail": 0, "expire": 0}
+
+    # 만료 처리 (전일 이전 예약은 항상, 장 종료 이후에는 당일 예약 전체)
+    if LIVE:
+        result["expire"] = execute_write(conn, *query_expire_buy_reserve(hhmm >= RESERVE_END_HHMM))["affectedRows"]
+
+    if not (RESERVE_START_HHMM <= hhmm < RESERVE_END_HHMM):
+        return result
+
+    user_map = {get_row_value(u, "REG_ID"): u for u in users}
+    for row in fetch_all(conn, *query_get_buy_reserve_list()):
+        result["target"] += 1
+        idx = row["IDX"]
+        reg_id = row["REG_ID"]
+        stock_code = row["JONGMOG_CD"]
+        reserve_price = to_number(row["BUY_PRICE"])
+        current_price = current_price_maps_by_user.get(reg_id, {}).get(stock_code)
+        user_info = user_map.get(reg_id)
+
+        if user_info is None or not has_value(current_price) or to_number(current_price) > reserve_price:
+            result["wait"] += 1
+            continue
+
+        order_price = str(max(1, math.floor(to_number(current_price))))
+        if not LIVE:
+            log(f"[DRY-RUN] 매수예약 실행 스킵 idx={idx} stockCode={stock_code} price={order_price}")
+            continue
+        if execute_write(conn, *query_claim_buy_reserve(idx))["affectedRows"] != 1:
+            continue
+
+        try:
+            input_dict = {"user_id": reg_id, "accno": get_row_value(user_info, "ACCNO"), "jongmogCd": stock_code,
+                          "orderPrice": order_price, "buyCnt": str(row["BUY_CNT"])}
+            body = build_stock_order_body(input_dict)
+            api_result = call_order_api(conn, input_dict, "kt10000", body)
+            order_no = get_response_value(api_result["response"], ["ord_no", "order_no", "ORDER_NO"])
+            return_msg = get_response_value(api_result["response"], ["return_msg", "msg", "message", "RETURN_MSG"])
+            if not has_value(order_no):
+                raise RuntimeError(f"주문번호 없음 {return_msg}")
+
+            execute_write(conn, *query_update_buy_reserve_exec(idx, order_price, order_no, api_result["request"]["accno"],
+                                                              f"매수예약 실행 {return_msg or ''}"))
+            result["exec"] += 1
+            log(f"매수예약 실행 완료 idx={idx} stockCode={stock_code} 예약가={int(reserve_price)} 주문가={order_price} orderNo={order_no}")
+            send_order_mail("매수예약 주문 실행 완료", {
+                "stockName": row["JONGMOG_NM"], "stockCode": stock_code, "orderPrice": order_price,
+                "orderQty": row["BUY_CNT"], "reason": f"매수예약 (예약가 {int(reserve_price):,} 이하 도달)"})
+        except Exception as e:
+            execute_write(conn, *query_update_buy_reserve_fail(idx, f"[예약실행 실패] {str(e)[:500]}"))
+            result["fail"] += 1
+            log(f"매수예약 실행 실패 idx={idx} stockCode={stock_code}: {e}")
+
+    return result
+
+
+# ------------------------------------------------------------------
 # 오전 일일정리 / 실행시간 체크
 # ------------------------------------------------------------------
 def run_daily_morning_maintenance(conn):
@@ -1751,6 +1867,12 @@ def run_current_price_biz(conn):
         sync_totals["cancel"] += item.get("cancelCount", 0)
         sync_totals["error"] += item.get("errorCount", 0)
     log(f"주문 상태 동기화 완료 {sync_totals}")
+
+    # 2026.10.14 매수 예약 처리 (자동매매 판단보다 먼저 실행해서 매수이력 쿨다운에 반영되게)
+    try:
+        log(f"매수예약 처리 완료 {run_buy_reserve(conn, users, current_price_maps_by_user)}")
+    except Exception as e:
+        log(f"매수예약 처리 실패: {e}")
 
     buy_sell_results = run_buy_sell_decision(conn, users, monitor_rows, current_price_maps_by_user, TEST_MODE,
                                               user_monitor_code_map)

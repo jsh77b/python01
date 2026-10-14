@@ -133,7 +133,7 @@ def query_order_hist_profit(conn, reg_id):
             WHERE  o.REG_ID     = %s
               AND  o.DEL_YN     = 'N'
               AND  o.CLOSE_YN   = 'N'
-              AND  o.ORDER_STAT != 'AD_240_10'
+              AND  o.ORDER_STAT = 'AD_240_11'
             GROUP  BY o.JONGMOG_CD, j.JONGMOG_NM, j.CUR_PRICE
             ORDER  BY BUY_AMT DESC
             """,

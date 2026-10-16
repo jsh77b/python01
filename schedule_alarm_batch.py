@@ -6,8 +6,9 @@ web.js의 5분 배치(runBatchJob5)를 그대로 파이썬으로 이관.
 TB_SCHEDULE에서 오늘 일정 중 알람 시각이 [현재-10분, 현재) 구간에 걸리는 건을
 찾아 메일로 알린다. Node 기능을 다른 곳으로 이관하는 작업의 일환.
 
-주의: Node 원본 쿼리가 REG_ID/USER_GROUP_IDX 컬럼을 SELECT하지 않아 항상
-기본 수신자(MAIL_RECEIVER)로만 발송되던 기존 동작을 그대로 유지한다(동일 조건 이관).
+2026.10.15 수신자 분기
+  - 그룹 일정(USER_GROUP_IDX > 0) : 기존대로 기본 수신자(MAIL_RECEIVER)
+  - 개인 일정(USER_GROUP_IDX = 0) : 등록자(REG_ID = 이메일 아이디) 메일로 발송
 
 [실행방법 / cron 등록 예]
   STOCK_DB_PASS=xxx STOCK_MAIL_PASS=xxx python3 schedule_alarm_batch.py
@@ -48,6 +49,8 @@ SELECT CONCAT(CURDATE(), ' ', TIME_FORMAT(STR_TO_DATE(SCHEDULE_ST_HHMM, '%H%i'),
     , SCHEDULE_DT
     , SCHEDULE_ST_HHMM
     , ALARM_HHMM
+    , REG_ID
+    , USER_GROUP_IDX
 FROM   TB_SCHEDULE
 WHERE  1=1
 AND    DEL_YN = 'N'
@@ -67,17 +70,25 @@ def get_connection():
     )
 
 
-def send_mail(subject, text):
+def get_receiver(row):
+    """개인 일정은 등록자 메일, 그룹 일정(또는 등록자 메일 형식 아님)은 기본 수신자"""
+    reg_id = (row.get("REG_ID") or "").strip()
+    if int(row.get("USER_GROUP_IDX") or 0) == 0 and "@" in reg_id:
+        return reg_id
+    return MAIL_RECEIVER
+
+
+def send_mail(subject, text, receiver):
     msg = MIMEText(text, "plain", "utf-8")
     msg["From"] = MAIL_SENDER
-    msg["To"] = MAIL_RECEIVER
+    msg["To"] = receiver
     msg["Subject"] = Header(subject, "utf-8")
 
     ctx = ssl.create_default_context()
 
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx) as smtp:
         smtp.login(MAIL_SENDER, MAIL_PASS)
-        smtp.sendmail(MAIL_SENDER, MAIL_RECEIVER, msg.as_string())
+        smtp.sendmail(MAIL_SENDER, receiver, msg.as_string())
 
 
 def main():
@@ -99,8 +110,9 @@ def main():
                 continue
             try:
                 title = row["TITLE"]
-                send_mail(f"[스케줄 알림] {title}", f"스케줄 알림\n\n{title}")
-                log(f"발송 완료: {title}")
+                receiver = get_receiver(row)
+                send_mail(f"[스케줄 알림] {title}", f"스케줄 알림\n\n{title}", receiver)
+                log(f"발송 완료: {title} -> {receiver}")
             except Exception as e:
                 log(f"발송 실패: {row.get('TITLE')} - {e}")
     finally:

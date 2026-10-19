@@ -21,9 +21,15 @@
                   수량 = BUY_AMT(매수금액) / 매수가, 손익금액(PROFIT_AMT) = 수량 x 차익 - 비용
                   비용 : ETF 0.03% (매매세 없음) / 주식 0.23% (수수료+매매세)
 
+스윙 (2026.10.19 추가, ANAL_GUBN=S : 일봉(ka10081) 기준, 분석구분별로 설정/결과 따로 저장)
+  - 보유 종목이 없는 날 저가가 매수가(시가 기준 하락) 이하면 매수
+  - 다음 거래일부터 최대 HOLD_DAYS 거래일 동안 고가가 익절가 이상이면 익절 (시가가 이미 익절가 이상이면 시가)
+  - 최대보유일까지 미도달이면 그날 종가 정리 (CUT_CNT), 분석 마지막까지 보유중인 건은 제외
+  - HOLD_AVG : 평균보유일 / MAX_LOSS : 보유중 최저가 기준 최대물림%
+
 실행방법
-  python3 scalp_analysis_batch.py            # 요청 건 처리
-  python3 scalp_analysis_batch.py <REG_ID>   # 요청 없이 해당 사용자 즉시 분석 (테스트용)
+  python3 scalp_analysis_batch.py                 # 요청 건 처리
+  python3 scalp_analysis_batch.py <REG_ID> [D|S]  # 요청 없이 해당 사용자 즉시 분석 (테스트용, 구분 생략시 전체)
 ================================================================================
 """
 
@@ -82,6 +88,32 @@ def fetch_min5(user, stock_code, pages):
     return rows
 
 
+def fetch_day(user, stock_code):
+    """키움 일봉(ka10081) 조회 (1회 약 600거래일) -> [(일자, 시가, 고가, 저가, 종가, 거래대금(백만))] 일자 오름차순"""
+    data = {}
+    for _retry in range(3):
+        response = requests.post(
+            b.KIWOOM_HOST + CHART_ENDPOINT,
+            json={"stk_cd": stock_code, "base_dt": datetime.now().strftime("%Y%m%d"), "upd_stkpc_tp": "1"},
+            headers={
+                "Content-Type": "application/json;charset=UTF-8",
+                "authorization": f"{user['TOKEN_TYPE']} {user['TOKEN']}",
+                "api-id": "ka10081",
+            },
+            timeout=30,
+        )
+        data = response.json() or {}
+        if str(data.get("return_code")) == "0":
+            break
+        time.sleep(1.5)  # 호출 제한 시 잠시 대기 후 재시도
+    rows = []
+    for x in data.get("stk_dt_pole_chart_qry") or []:
+        num = lambda k: abs(int(x.get(k) or 0))
+        rows.append((str(x.get("dt") or ""), num("open_pric"), num("high_pric"), num("low_pric"), num("cur_prc"), num("trde_prica")))
+    time.sleep(0.4)
+    return sorted(r for r in rows if r[3] > 0)
+
+
 def analyze(rows, days, unit, drop_val, profit_val, buy_amt, fee):
     """5분봉으로 단타 지표 + 백테스트 계산 (분석 불가 시 None)"""
     by_day = defaultdict(list)
@@ -136,11 +168,69 @@ def analyze(rows, days, unit, drop_val, profit_val, buy_amt, fee):
     }
 
 
+def analyze_swing(rows, days, unit, drop_val, profit_val, buy_amt, fee, hold_days):
+    """일봉으로 스윙 백테스트 (분석 불가 시 None)"""
+    if len(rows) < 20:
+        return None
+    start = max(0, len(rows) - days)
+    bars = rows[start:]
+
+    results, amounts, holds, losses, cut_cnt = [], [], [], [], 0
+    i = start
+    while i < len(rows):
+        o, lo = rows[i][1], rows[i][3]
+        buy_price = o * (1 - drop_val / 100) if unit == "P" else o - drop_val
+        qty = int(buy_amt // buy_price) if buy_price > 0 else 0
+        if qty <= 0 or lo > buy_price:
+            i += 1
+            continue
+        # 매수일 다음 거래일부터 최대보유일까지 익절 확인, 보유중 최저가로 최대물림 계산
+        target = buy_price * (1 + profit_val / 100) if unit == "P" else buy_price + profit_val
+        min_low, sell_price, j = lo, None, i
+        for j in range(i + 1, min(i + hold_days, len(rows) - 1) + 1):
+            min_low = min(min_low, rows[j][3])
+            if rows[j][2] >= target:
+                sell_price = max(target, rows[j][1])
+                break
+        if sell_price is None:
+            if i + hold_days > len(rows) - 1:
+                break  # 분석 마지막까지 보유중 -> 제외
+            sell_price = rows[j][4]
+            cut_cnt += 1
+        rate = (sell_price / buy_price - 1) * 100 - fee
+        results.append(rate)
+        amounts.append(qty * buy_price * rate / 100)
+        holds.append(j - i)
+        losses.append((min_low / buy_price - 1) * 100)
+        i = j + 1
+
+    return {
+        "DAY_CNT": len(bars),
+        "DAY_RANGE": round(sum((x[2] - x[3]) / x[3] * 100 for x in bars) / len(bars), 2),
+        "MIN5_RANGE": 0,
+        "TRADE_AMT": round(sum(x[5] for x in bars) / len(bars) / 100, 1),
+        "PERIOD_RATE": round(bars[-1][4] / bars[0][1] * 100 - 100, 2) if bars[0][1] else 0,
+        "TRADE_CNT": len(results),
+        "WIN_CNT": sum(1 for r in results if r > 0),
+        "PROFIT_SUM": round(sum(results), 2),
+        "PROFIT_AMT": int(round(sum(amounts))),
+        "HOLD_AVG": round(sum(holds) / len(holds), 1) if holds else 0,
+        "MAX_LOSS": round(min(losses), 2) if losses else 0,
+        "CUT_CNT": cut_cnt,
+        "LAST_DT": bars[-1][0],
+        "LAST_OPEN": bars[-1][1],
+        "LAST_CLOSE": bars[-1][4],
+    }
+
+
 def run_user(conn, user, setting):
     """사용자 감시목록 전 종목 분석 후 결과 저장 -> (분석종목수, 제외종목수)"""
     cur = conn.cursor()
     reg_id = setting["REG_ID"]
-    days = max(5, min(int(setting["ANAL_DAYS"]), 22))
+    gubn = "S" if setting["ANAL_GUBN"] == "S" else "D"
+    # 분석기간 : 단타 5~22일(5분봉 한계), 스윙 20~120일
+    days = max(20, min(int(setting["ANAL_DAYS"]), 120)) if gubn == "S" else max(5, min(int(setting["ANAL_DAYS"]), 22))
+    hold_days = max(1, min(int(setting["HOLD_DAYS"]), 30))
     unit = "W" if setting["UNIT_GUBN"] == "W" else "P"
     drop_val = float(setting["BUY_DROP_AMT"] if unit == "W" else setting["BUY_DROP_PER"])
     profit_val = float(setting["TAKE_PROFIT_AMT"] if unit == "W" else setting["TAKE_PROFIT_PER"])
@@ -160,7 +250,10 @@ def run_user(conn, user, setting):
         code, name = s["JONGMOG_CD"], s["JONGMOG_NM"]
         fee = FEE_ETF if name.upper().startswith(ETF_PREFIX) else FEE_STOCK
         try:
-            r = analyze(fetch_min5(user, code, pages), days, unit, drop_val, profit_val, buy_amt, fee)
+            if gubn == "S":
+                r = analyze_swing(fetch_day(user, code), days, unit, drop_val, profit_val, buy_amt, fee, hold_days)
+            else:
+                r = analyze(fetch_min5(user, code, pages), days, unit, drop_val, profit_val, buy_amt, fee)
         except Exception as e:
             log(f"  {code} {name} 조회 실패: {e}")
             r = None
@@ -170,16 +263,16 @@ def run_user(conn, user, setting):
         r.update({"JONGMOG_CD": code, "JONGMOG_NM": name, "FEE_RATE": fee})
         results.append(r)
 
-    # 사용자 기존 결과 삭제 후 재등록
-    cur.execute("DELETE FROM TB_SCALP_RESULT WHERE REG_ID = %s", (reg_id,))
+    # 사용자 기존 결과(같은 분석구분) 삭제 후 재등록
+    cur.execute("DELETE FROM TB_SCALP_RESULT WHERE REG_ID = %s AND ANAL_GUBN = %s", (reg_id, gubn))
     for r in results:
         cur.execute(
-            "INSERT INTO TB_SCALP_RESULT (REG_ID, JONGMOG_CD, JONGMOG_NM, DAY_CNT, DAY_RANGE, MIN5_RANGE, TRADE_AMT, PERIOD_RATE,"
-            " TRADE_CNT, WIN_CNT, PROFIT_SUM, PROFIT_AMT, FEE_RATE, LAST_DT, LAST_OPEN, LAST_CLOSE, REG_DT)"
-            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
-            (reg_id, r["JONGMOG_CD"], r["JONGMOG_NM"], r["DAY_CNT"], r["DAY_RANGE"], r["MIN5_RANGE"], r["TRADE_AMT"],
-             r["PERIOD_RATE"], r["TRADE_CNT"], r["WIN_CNT"], r["PROFIT_SUM"], r["PROFIT_AMT"], r["FEE_RATE"], r["LAST_DT"],
-             r["LAST_OPEN"], r["LAST_CLOSE"]),
+            "INSERT INTO TB_SCALP_RESULT (REG_ID, ANAL_GUBN, JONGMOG_CD, JONGMOG_NM, DAY_CNT, DAY_RANGE, MIN5_RANGE, TRADE_AMT, PERIOD_RATE,"
+            " TRADE_CNT, WIN_CNT, PROFIT_SUM, PROFIT_AMT, FEE_RATE, HOLD_AVG, MAX_LOSS, CUT_CNT, LAST_DT, LAST_OPEN, LAST_CLOSE, REG_DT)"
+            " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())",
+            (reg_id, gubn, r["JONGMOG_CD"], r["JONGMOG_NM"], r["DAY_CNT"], r["DAY_RANGE"], r["MIN5_RANGE"], r["TRADE_AMT"],
+             r["PERIOD_RATE"], r["TRADE_CNT"], r["WIN_CNT"], r["PROFIT_SUM"], r["PROFIT_AMT"], r["FEE_RATE"],
+             r.get("HOLD_AVG", 0), r.get("MAX_LOSS", 0), r.get("CUT_CNT", 0), r["LAST_DT"], r["LAST_OPEN"], r["LAST_CLOSE"]),
         )
     conn.commit()
     return len(results), skip
@@ -189,9 +282,10 @@ def main():
     conn = b.get_connection()
     cur = conn.cursor()
     force_id = sys.argv[1] if len(sys.argv) > 1 else ""
+    force_gubn = sys.argv[2] if len(sys.argv) > 2 else ""
 
     if force_id:
-        cur.execute("SELECT * FROM TB_SCALP_SET WHERE REG_ID = %s", (force_id,))
+        cur.execute("SELECT * FROM TB_SCALP_SET WHERE REG_ID = %s AND (%s = '' OR ANAL_GUBN = %s)", (force_id, force_gubn, force_gubn))
     else:
         # 준비 건 + 시작 후 10분 넘게 멈춘 건(배치 중단 등) 재처리
         cur.execute("SELECT * FROM TB_SCALP_SET WHERE REQ_STAT = 'AD_320_10'"
@@ -206,10 +300,11 @@ def main():
 
     users = {u["REG_ID"]: u for u in b.get_active_users(conn)}
     for setting in targets:
-        reg_id = setting["REG_ID"]
+        reg_id, gubn = setting["REG_ID"], setting["ANAL_GUBN"]
+        gubn_nm = "스윙" if gubn == "S" else "단타"
         # 요청 선점 (중복 실행 방지)
-        cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_11', UPD_DT = NOW() WHERE REG_ID = %s"
-                    + ("" if force_id else " AND REQ_STAT = %s AND UPD_DT = %s"), (reg_id,) if force_id else (reg_id, setting["REQ_STAT"], setting["UPD_DT"]))
+        cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_11', UPD_DT = NOW() WHERE REG_ID = %s AND ANAL_GUBN = %s"
+                    + ("" if force_id else " AND REQ_STAT = %s AND UPD_DT = %s"), (reg_id, gubn) if force_id else (reg_id, gubn, setting["REQ_STAT"], setting["UPD_DT"]))
         conn.commit()
         if cur.rowcount != 1 and not force_id:
             continue
@@ -218,7 +313,9 @@ def main():
             cond = f"시가-{setting['BUY_DROP_AMT']}원 매수 +{setting['TAKE_PROFIT_AMT']}원 익절"
         else:
             cond = f"시가-{setting['BUY_DROP_PER']}% 매수 +{setting['TAKE_PROFIT_PER']}% 익절"
-        log(f"단타분석 시작 {reg_id} 기간 {setting['ANAL_DAYS']}일 {cond} 매수금액 {setting['BUY_AMT']}원")
+        if gubn == "S":
+            cond += f" 최대보유 {setting['HOLD_DAYS']}일"
+        log(f"{gubn_nm}분석 시작 {reg_id} 기간 {setting['ANAL_DAYS']}일 {cond} 매수금액 {setting['BUY_AMT']}원")
         try:
             user = users.get(reg_id)
             if user is None:
@@ -227,13 +324,13 @@ def main():
                 user = b.refresh_token(conn, user)
             cnt, skip = run_user(conn, user, setting)
             msg = f"분석완료 {cnt}종목" + (f" (데이터부족 제외 {skip}종목)" if skip else "")
-            cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_12', DONE_DT = NOW(), RESULT_MSG = %s, UPD_DT = NOW() WHERE REG_ID = %s",
-                        (msg, reg_id))
-            log(f"단타분석 완료 {reg_id} {msg}")
+            cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_12', DONE_DT = NOW(), RESULT_MSG = %s, UPD_DT = NOW() WHERE REG_ID = %s AND ANAL_GUBN = %s",
+                        (msg, reg_id, gubn))
+            log(f"{gubn_nm}분석 완료 {reg_id} {msg}")
         except Exception as e:
-            cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_14', DONE_DT = NOW(), RESULT_MSG = %s, UPD_DT = NOW() WHERE REG_ID = %s",
-                        (f"분석실패 {str(e)[:400]}", reg_id))
-            log(f"단타분석 실패 {reg_id}: {e}")
+            cur.execute("UPDATE TB_SCALP_SET SET REQ_STAT = 'AD_320_14', DONE_DT = NOW(), RESULT_MSG = %s, UPD_DT = NOW() WHERE REG_ID = %s AND ANAL_GUBN = %s",
+                        (f"분석실패 {str(e)[:400]}", reg_id, gubn))
+            log(f"{gubn_nm}분석 실패 {reg_id}: {e}")
             fail_cnt += 1
         conn.commit()
     if fail_cnt:

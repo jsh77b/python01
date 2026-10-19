@@ -76,6 +76,8 @@ STOP_LOSS_PROFIT_RATE = -20        # 2026.07.30 로직 정지 - 현재 미사용
 DOWNTREND_LOOKBACK_DAYS = 10
 DOWNTREND_DECLINE_RATE = -10
 RECENT_SELL_BLOCK_DAYS = 2
+SELL_DOWN_TREND_CNT = 5            # 2026.10.19 수익권 연속 하락 매도 기준 4 -> 5연속 (5분 간격)
+TRAIL_STOP_PER = 3                 # 2026.10.19 수익권에서 고가(오늘, 매수 이후) 대비 3% 이상 하락하면 매도
 
 
 def log(msg):
@@ -362,6 +364,7 @@ def query_set_order_list(jongmog_cd, user_id):
         "     , AOH.ORDER_NO, AOH.ORDER_STAT"
         "     , (SELECT IFNULL(ORDER_STATUS,'') FROM TB_API_ORDER_HIST X WHERE X.IDX = AOH.IDX) AS ORDER_STATUS"
         "     , AOH.BUY_PRICE AS BUY_PRICE_MIN"
+        "     , AOH.REG_DT AS BUY_REG_DT"
         " FROM TB_API_ORDER_HIST AOH"
         " WHERE 1=1 AND AOH.JONGMOG_CD = %s AND AOH.REG_ID = %s"
         " AND AOH.CLOSE_YN = 'N' AND AOH.ORDER_STAT IN ('AD_240_11','AD_240_10')"
@@ -516,6 +519,15 @@ def query_get_cur_price_up_down1(jongmog_cd):
         ") AA WHERE 1=1 AND AA.HOUR_YN = 'Y' ORDER BY AA.REG_DT DESC"
     )
     return sql, [jongmog_cd]
+
+
+# 2026.10.19 트레일링 매도용 고가 : 오늘(매수가 오늘이면 매수 이후) 현재가 최고값
+def query_get_today_high_price(jongmog_cd, buy_reg_dt):
+    sql = (
+        "SELECT MAX(CUR_PRICE) AS HIGH_PRICE FROM TB_API_CUR_PRICE"
+        " WHERE JONGMOG_CD = %s AND REG_DT >= GREATEST(CURDATE(), %s) AND TRDE_QTY > 0"
+    )
+    return sql, [jongmog_cd, buy_reg_dt]
 
 
 def query_get_cur_price_per(jongmog_cd):
@@ -1200,6 +1212,9 @@ def get_order_decision_context(conn, stock_code, reg_id, current_price):
     recent_buy_order_info = get_single_row(conn, *query_get_recent_buy_order_info(stock_code, reg_id, ADDITIONAL_BUY_COOLDOWN_MINUTES))
     today_buy_order_count_info = get_single_row(conn, *query_get_today_buy_order_count(stock_code, reg_id))
     recent_sell_info = get_single_row(conn, *query_get_recent_sell_info(stock_code, reg_id, RECENT_SELL_BLOCK_DAYS))
+    today_high_info = None
+    if order_rows:
+        today_high_info = get_single_row(conn, *query_get_today_high_price(stock_code, get_row_value(order_rows[0], "BUY_REG_DT")))
 
     return {
         "stockCode": stock_code, "regId": reg_id, "currentPrice": to_number(current_price),
@@ -1207,6 +1222,7 @@ def get_order_decision_context(conn, stock_code, reg_id, current_price):
         "trendInfo": trend_info, "previousTrendInfo": previous_trend_info,
         "orderRows": order_rows, "recentBuyOrderInfo": recent_buy_order_info,
         "todayBuyOrderCountInfo": today_buy_order_count_info, "recentSellInfo": recent_sell_info,
+        "todayHighInfo": today_high_info,
         "dailyStreakInfo": None, "stockProfitInfo": None,
     }
 
@@ -1293,9 +1309,18 @@ def build_order_decision(context, test_mode):
         if context["currentPrice"] >= basic_price_plus:
             decision["orderQty"] = buy_cnt
 
-            if trend == "DOWN" and trend_cnt >= 4:
+            if trend == "DOWN" and trend_cnt >= SELL_DOWN_TREND_CNT:
                 decision["action"] = "SELL_EXEC"
-                decision["reason"] = "수익권 4연속 하락 매도"
+                decision["reason"] = f"수익권 {SELL_DOWN_TREND_CNT}연속 하락 매도"
+                return decision
+
+            # 2026.10.19 트레일링 매도 : 수익권에서 고가 대비 TRAIL_STOP_PER% 이상 밀리면 매도 (연속 하락이 끊겨도 수익 보호)
+            high_price = to_number(get_row_value(context.get("todayHighInfo") or {}, "HIGH_PRICE"))
+            decision["highPrice"] = high_price
+            if high_price > 0 and context["currentPrice"] <= high_price * (1 - TRAIL_STOP_PER / 100):
+                drop_per = round((context["currentPrice"] / high_price - 1) * 100, 2)
+                decision["action"] = "SELL_EXEC"
+                decision["reason"] = f"수익권 고가 {int(high_price)} 대비 {drop_per}% 하락 매도"
                 return decision
 
             if context.get("dailyStreakInfo") and context["dailyStreakInfo"]["prevUpCnt"] >= 5 and context["dailyStreakInfo"]["downCnt"] >= 1:

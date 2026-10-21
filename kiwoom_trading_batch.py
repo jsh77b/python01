@@ -365,6 +365,7 @@ def query_set_order_list(jongmog_cd, user_id):
         "     , (SELECT IFNULL(ORDER_STATUS,'') FROM TB_API_ORDER_HIST X WHERE X.IDX = AOH.IDX) AS ORDER_STATUS"
         "     , AOH.BUY_PRICE AS BUY_PRICE_MIN"
         "     , AOH.REG_DT AS BUY_REG_DT"
+        "     , AOH.ANAL_GUBN, AOH.TARGET_PRICE"
         " FROM TB_API_ORDER_HIST AOH"
         " WHERE 1=1 AND AOH.JONGMOG_CD = %s AND AOH.REG_ID = %s"
         " AND AOH.CLOSE_YN = 'N' AND AOH.ORDER_STAT IN ('AD_240_11','AD_240_10')"
@@ -1304,6 +1305,16 @@ def build_order_decision(context, test_mode):
         if order_stat == "AD_240_10" or has_value(order_status):
             decision["action"] = "WAIT"
             decision["reason"] = "주문접수 또는 매도주문번호 존재"
+            return decision
+
+        # 2026.10.21 단타/스윙 화면 매수예약 주문 : 익절가 도달 시 자동매도 (수익권 추세 매도보다 우선)
+        target_price = to_number(get_row_value(order_row, "TARGET_PRICE"))
+        decision["targetPrice"] = target_price
+        if target_price > 0 and context["currentPrice"] >= target_price:
+            gubn_nm = {"D": "단타", "S": "스윙"}.get(get_row_value(order_row, "ANAL_GUBN"), "")
+            decision["orderQty"] = buy_cnt
+            decision["action"] = "SELL_EXEC"
+            decision["reason"] = f"{gubn_nm}익절가 {int(target_price)} 도달 매도"
             return decision
 
         if context["currentPrice"] >= basic_price_plus:

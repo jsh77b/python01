@@ -369,7 +369,8 @@ def query_set_order_list(jongmog_cd, user_id):
         " FROM TB_API_ORDER_HIST AOH"
         " WHERE 1=1 AND AOH.JONGMOG_CD = %s AND AOH.REG_ID = %s"
         " AND AOH.CLOSE_YN = 'N' AND AOH.ORDER_STAT IN ('AD_240_11','AD_240_10')"
-        " ORDER BY AOH.BUY_PRICE LIMIT 0,1"
+        # 2026.10.26 같은 매수가(1ROW 분할) 여러건이면 IDX 작은 ROW 부터 매도 (감시목록 매수정보 수량과 동일 기준)
+        " ORDER BY AOH.BUY_PRICE, AOH.IDX LIMIT 0,1"
     )
     return sql, [jongmog_cd, user_id]
 

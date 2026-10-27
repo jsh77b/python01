@@ -686,13 +686,32 @@ def send_mail(subject, text):
 
 def send_order_mail(subject, decision):
     order_price = decision.get("orderPrice") or 0
-    text = (
-        f"종목명: {decision.get('stockName') or ''}\n"
-        f"종목코드: {decision.get('stockCode')}\n"
-        f"주문가격: {int(round(to_number(order_price))):,}\n"
-        f"주문수량: {decision.get('orderQty')}\n"
-        f"주문사유: {decision.get('reason')}" + (" (손절)" if decision.get("stopLossYn") == "Y" else "") + "\n"
-    )
+    reason = f"{decision.get('reason')}" + (" (손절)" if decision.get("stopLossYn") == "Y" else "")
+    if decision.get("action") == "SELL_EXEC":
+        # 2026.10.27 매도 메일 : 매수가격(매도 대상 주문이력 매수가) / 매도가격(주문가) / 수량 / 수익금액·수익율(수수료·세금 제외)
+        buy_price = int(round(to_number(decision.get("basicPriceMin"))))
+        sell_price = int(round(to_number(order_price)))
+        qty = int(to_number(decision.get("orderQty")))
+        profit_amt = (sell_price - buy_price) * qty
+        profit_per = round((sell_price / buy_price - 1) * 100, 2) if buy_price > 0 else 0
+        text = (
+            f"종목명: {decision.get('stockName') or ''}\n"
+            f"종목코드: {decision.get('stockCode')}\n"
+            f"주문사유: {reason}\n"
+            f"매수가격: {buy_price:,}\n"
+            f"매도가격: {sell_price:,}\n"
+            f"수량: {qty:,}\n"
+            f"수익금액: {profit_amt:,}\n"
+            f"수익율: {profit_per}%\n"
+        )
+    else:
+        text = (
+            f"종목명: {decision.get('stockName') or ''}\n"
+            f"종목코드: {decision.get('stockCode')}\n"
+            f"주문가격: {int(round(to_number(order_price))):,}\n"
+            f"주문수량: {decision.get('orderQty')}\n"
+            f"주문사유: {reason}\n"
+        )
     prefix = "" if LIVE else "[TEST] "
     try:
         send_mail(prefix + subject, text)

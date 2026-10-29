@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # 식당 메뉴 일러스트 이미지 일괄 생성 (SVG 그린 후 Playwright 캡쳐, 640x480 / 메뉴 썸네일 4:3)
-# 사용법 : python3 menu_food_image.py  -> capture/menu/food/menu_<IDX>.png
+# 사용법 : python3 menu_food_image.py [메뉴IDX ...]  -> capture/menu/food/menu_<IDX>.png (인자 없으면 전체)
 import os
+import sys
 from playwright.sync_api import sync_playwright
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "capture", "menu", "food")
@@ -123,6 +124,36 @@ def draw(kind):
 <path d="M450 250 q60 10 40 70 q-15 30 -50 25" fill="none" stroke="#b9c2cc" stroke-width="12"/>'''
     if kind == "lemonade":
         return cup("#f7e463", '<circle cx="410" cy="150" r="48" fill="#f7d53a" stroke="#e8b923" stroke-width="5"/><g stroke="#fff6b8" stroke-width="3">' + "".join(f'<line x1="410" y1="150" x2="{410+40*c}" y2="{150+40*s}"/>' for c, s in ((1, 0), (0.5, 0.87), (-0.5, 0.87), (-1, 0), (-0.5, -0.87), (0.5, -0.87))) + '</g><g fill="#ffffff" opacity=".8"><rect x="260" y="250" width="40" height="40" rx="6"/><rect x="320" y="300" width="40" height="40" rx="6"/></g>')
+    if kind.startswith("tunasashimi"):
+        # 참치회 : 등급(진/선/미)별로 회 조각 수를 다르게
+        cnt = {"tunasashimi3": 9, "tunasashimi2": 7, "tunasashimi1": 5}[kind]
+        colors = ["#d7263d", "#f08c8c", "#e5536b", "#f6b1b1", "#c81d3a"]
+        sl = '<path d="M150 330 q170 -60 340 0" stroke="#e9f2e1" stroke-width="40" fill="none" opacity=".9"/>'
+        for i in range(cnt):
+            x = 175 + i * (290 // max(cnt - 1, 1)); y = 280 + (i % 2) * 22
+            sl += f'<g transform="rotate(-18 {x} {y})"><rect x="{x-24}" y="{y-38}" width="48" height="76" rx="8" fill="{colors[i % len(colors)]}" stroke="#ffffff88" stroke-width="2"/><path d="M{x-16} {y-20} l32 10 M{x-16} {y+4} l32 10" stroke="#ffffff70" stroke-width="3"/></g>'
+        sl += '<g fill="#5fa04a"><ellipse cx="190" cy="350" rx="22" ry="9"/><ellipse cx="450" cy="350" rx="22" ry="9"/></g><circle cx="455" cy="250" r="16" fill="#9ccc65"/>'
+        return plate(sl, "#2b2b2b")
+    if kind == "udon":
+        noodle = "".join(f'<path d="M{185+i*18} 252 q9 -8 18 0 q9 8 18 0" fill="none" stroke="#fbf3dc" stroke-width="8" stroke-linecap="round"/>' for i in range(15))
+        return steam() + bowl("#c98d4b", noodle + '<g fill="#7ab648"><circle cx="250" cy="244" r="7"/><circle cx="268" cy="258" r="6"/><circle cx="395" cy="250" r="7"/></g><ellipse cx="335" cy="242" rx="34" ry="13" fill="#ffffff" stroke="#f1a7b5" stroke-width="5"/><path d="M215 238 l50 -6 l-6 18 z" fill="#2f4a2a"/>')
+    if kind == "soju":
+        return '''<ellipse cx="320" cy="430" rx="190" ry="16" fill="#000" opacity=".1"/>
+<path d="M255 60 h40 v70 q45 30 45 90 v190 q0 15 -15 15 h-100 q-15 0 -15 -15 v-190 q0 -60 45 -90 z" fill="#3fa565" opacity=".9" stroke="#2c7a49" stroke-width="3"/>
+<rect x="250" y="44" width="50" height="22" rx="4" fill="#2c7a49"/><rect x="223" y="260" width="104" height="90" rx="6" fill="#ffffff" opacity=".85"/>
+<path d="M240 300 h70 M240 320 h50" stroke="#3fa565" stroke-width="6"/><path d="M228 150 v250" stroke="#ffffff" stroke-width="8" opacity=".35"/>
+<path d="M380 330 h80 l-10 95 h-60 z" fill="#ffffff" opacity=".6" stroke="#b9c2cc" stroke-width="3"/><path d="M384 360 h72 l-7 62 h-58 z" fill="#e9f5ee"/>'''
+    if kind == "beer":
+        return '''<ellipse cx="320" cy="430" rx="160" ry="16" fill="#000" opacity=".1"/>
+<path d="M410 200 q70 0 70 70 q0 70 -70 70" fill="none" stroke="#d9dee4" stroke-width="22"/>
+<rect x="220" y="150" width="190" height="275" rx="16" fill="#f5b821" stroke="#c8d0d8" stroke-width="5"/>
+<path d="M200 165 q20 -55 60 -40 q20 -40 65 -20 q35 -30 70 5 q40 -5 35 45 q-5 20 -30 20 h-170 q-35 0 -30 -10 z" fill="#ffffff" stroke="#eee" stroke-width="2"/>
+<g fill="#ffffff" opacity=".6"><circle cx="260" cy="300" r="5"/><circle cx="300" cy="350" r="4"/><circle cx="350" cy="280" r="5"/><circle cx="330" cy="380" r="4"/></g>
+<path d="M240 200 v200" stroke="#ffffff" stroke-width="10" opacity=".35"/>'''
+    if kind == "cola":
+        return cup("#4a1f12", '<g fill="#ffffff" opacity=".55"><rect x="260" y="190" width="42" height="42" rx="6"/><rect x="330" y="220" width="40" height="40" rx="6"/></g><g fill="#ffffff" opacity=".5"><circle cx="300" cy="300" r="4"/><circle cx="340" cy="330" r="3"/><circle cx="280" cy="360" r="3"/></g><rect x="335" y="70" width="14" height="190" rx="7" fill="#e2574c" transform="rotate(10 342 165)"/>')
+    if kind == "cider":
+        return cup("#e6f6e4", '<g fill="#ffffff" opacity=".9"><rect x="260" y="190" width="42" height="42" rx="6"/><rect x="330" y="220" width="40" height="40" rx="6"/></g><g fill="#ffffff" stroke="#b8d8b4" stroke-width="2"><circle cx="300" cy="300" r="5"/><circle cx="340" cy="330" r="4"/><circle cx="280" cy="360" r="4"/><circle cx="360" cy="380" r="5"/><circle cx="320" cy="260" r="3"/></g><circle cx="405" cy="160" r="40" fill="#b5e48c" stroke="#7cb342" stroke-width="5"/>')
     return plate("")
 
 
@@ -136,6 +167,10 @@ MENUS = {
     78: ("porridge", "계란죽"), 67: ("gamjatang", "감자탕"), 79: ("gomtang", "소머리 곰탕"),
     80: ("mandu", "만두국"), 66: ("misu", "미숫가루"), 68: ("milk", "우유"),
     74: ("greentea", "녹차"), 75: ("lemonade", "레몬에이드"),
+    # 2026.10.29 rest_idx 352 (참치회 전문점)
+    45: ("tunasashimi3", "참치회[진]"), 46: ("tunasashimi2", "참치회[선]"), 47: ("tunasashimi1", "참치회[미]"),
+    49: ("udon", "우동"), 48: ("steamedegg", "계란찜"), 50: ("soju", "소주"),
+    51: ("beer", "맥주"), 52: ("cola", "콜라"), 53: ("cider", "사이다"),
 }
 
 
@@ -153,11 +188,13 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": W, "height": H})
-        for idx, (kind, name) in MENUS.items():
+        targets = [int(x) for x in sys.argv[1:]] or list(MENUS)
+        for idx in targets:
+            kind, name = MENUS[idx]
             page.set_content(page_html(kind, name))
             page.screenshot(path=os.path.join(OUT_DIR, f"menu_{idx}.png"))
         browser.close()
-    print("생성 완료 :", len(MENUS), "건 ->", OUT_DIR)
+    print("생성 완료 :", len(targets), "건 ->", OUT_DIR)
 
 
 if __name__ == "__main__":

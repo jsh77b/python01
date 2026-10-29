@@ -4,6 +4,8 @@
 CREATE TABLE TB_BATCH_MASTER (
   SEQ            INT           NOT NULL AUTO_INCREMENT      COMMENT 'SEQ',
   BATCH_NM       VARCHAR(200)  NOT NULL                     COMMENT '배치 파일명 (예: stock_monitor.py)',
+  TITLE          VARCHAR(200)  NOT NULL DEFAULT ''           COMMENT '배치 제목',
+  CONTENT        TEXT                                        COMMENT '배치 설명/내용',
   CYCLE_NM       VARCHAR(100)  NOT NULL DEFAULT ''           COMMENT '주기 (한글, 예: 10분마다)',
   CRON_INFO      VARCHAR(100)  NOT NULL DEFAULT ''           COMMENT 'CRON 원본 값 (예: */10 * * * *)',
   STATUS         VARCHAR(20)   NOT NULL DEFAULT 'AD_320_10'  COMMENT '상태 (TB_COMM_CD GRP_CD=AD_320: 준비/시작/완료/취소/실패)',

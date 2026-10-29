@@ -32,6 +32,10 @@ import eventlet
 import socketio
 from datetime import datetime
 
+# 2026.09.22 숫자야구게임 - baseball_* 이벤트만 추가로 등록한다.
+#            기존 connection/join/user/in/out 계약은 전혀 건드리지 않는다.
+import baseball_game
+
 HOST = "0.0.0.0"
 PORT = 8765
 
@@ -154,6 +158,9 @@ def on_out(sid, data):
 
 @sio.event
 def disconnect(sid):
+    # 2026.09.22 숫자야구 - 재접속 유예 처리 (F5가 이탈로 처리되지 않게)
+    baseball_game.on_disconnect(sid)
+
     info = connections.pop(sid, None)
     if info is None:
         log(f"[소켓서버] 연결종료: sid={sid} (등록된 방 정보 없음)")
@@ -174,5 +181,11 @@ def disconnect(sid):
 
 
 if __name__ == "__main__":
+    # 2026.09.22 숫자야구 - 이벤트 등록 + 재기동 복구
+    # 정답이 메모리에만 있어 재기동하면 진행중 게임은 재개할 수 없다.
+    # 그냥 두면 1인1판 제한 때문에 사용자가 잠기므로 미종료 방을 취소 처리한다.
+    baseball_game.register(sio)
+    baseball_game.recover_on_start()
+
     log(f"PHP 소켓 릴레이 서버 시작 - http://{HOST}:{PORT}")
     eventlet.wsgi.server(eventlet.listen((HOST, PORT)), app, log_output=False)

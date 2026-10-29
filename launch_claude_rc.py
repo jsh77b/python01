@@ -39,12 +39,30 @@ claude '/rc' 처럼 시작 프롬프트 인자로 넘기면 자동 실행되지 
 """
 
 import argparse
+import glob
+import os
 import shutil
 import subprocess
 import sys
 
 WSL_DISTRO = "Ubuntu"
 WORKSPACE_LINUX = "/workspace/cafe24_jsh77b1"
+
+# PATH 에 Windows 경로가 노출되지 않는 샌드박스 환경(Claude Code Bash 도구 등)을 위한 폴백 경로
+WT_FALLBACK_GLOB = "/mnt/c/Users/*/AppData/Local/Microsoft/WindowsApps/wt.exe"
+
+
+def ensure_wsl_interop_env() -> None:
+    """WSL_INTEROP 이 비어 있으면(샌드박스 셸 등) 살아있는 interop 소켓을 찾아 채워준다.
+
+    일반 로그인 WSL 세션에서는 systemd/init 이 자동 설정하지만, 일부 서브프로세스
+    샌드박스에서는 이 값이 비어 있어 wsl.exe/wt.exe 호출이 조용히 실패한다.
+    """
+    if os.environ.get("WSL_INTEROP"):
+        return
+    for sock in sorted(glob.glob("/run/WSL/*_interop")):
+        os.environ["WSL_INTEROP"] = sock
+        return
 
 
 def build_child_script(session_name: str, keep_open: bool) -> str:
@@ -69,6 +87,10 @@ def resolve_wt() -> str:
     """wt.exe 경로 확인. 없으면 안내 후 종료."""
     wt = shutil.which("wt.exe") or shutil.which("wt")
     if not wt:
+        matches = glob.glob(WT_FALLBACK_GLOB)
+        if matches:
+            wt = matches[0]
+    if not wt:
         sys.exit(
             "[오류] wt.exe(Windows Terminal)를 찾을 수 없습니다.\n"
             "  - Microsoft Store 에서 'Windows Terminal' 을 설치하거나\n"
@@ -80,6 +102,7 @@ def resolve_wt() -> str:
 
 
 def launch(session_name: str, new_window: bool, keep_open: bool) -> None:
+    ensure_wsl_interop_env()
     child_script = build_child_script(session_name, keep_open)
     wsl_args = ["wsl.exe", "-d", WSL_DISTRO, "--", "bash", "-lic", child_script]
 

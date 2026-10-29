@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 log/
 bin/
+# 실행 중 생성되는 상태/캐시/백업/캡처 파일
+state/
+backup/
+capture/
+.batch_use_yn_cache.json
+# 실제 시크릿 값 포함
+sql/insert_baseball_secret.sql

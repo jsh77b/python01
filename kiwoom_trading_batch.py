@@ -722,6 +722,11 @@ def send_order_mail(subject, decision):
 # ------------------------------------------------------------------
 # 키움 API 호출
 # ------------------------------------------------------------------
+class KiwoomApiError(Exception):
+    """키움 API가 실패 응답을 돌려준 경우 (return_code != 0 등)"""
+    pass
+
+
 def kiwoom_post(url, body, headers, timeout=30):
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     try:
@@ -729,6 +734,22 @@ def kiwoom_post(url, body, headers, timeout=30):
     except ValueError:
         data = {}
     return resp.headers, (data or {})
+
+
+# 2026.09.21 응답 검증 추가
+# 기존에는 return_code 를 전혀 보지 않아서, 인증 실패(예: 8050 IP 미등록) 응답이 와도
+# 빈 값으로 DB를 덮어쓰고 "갱신 완료" 로그를 남겼다. 실패는 예외로 올려서
+# 호출측이 스킵하거나 배치 상태가 "실패"로 남도록 한다.
+def check_kiwoom_response(data, api_id):
+    if not data:
+        raise KiwoomApiError(f"{api_id} 응답 없음(파싱 실패 또는 빈 응답)")
+
+    return_code = data.get("return_code")
+    if has_value(return_code) and str(return_code) != "0":
+        raise KiwoomApiError(
+            f"{api_id} 실패 return_code={return_code} return_msg={data.get('return_msg')}"
+        )
+    return data
 
 
 def call_kiwoom_api_with_user(user_info, endpoint, api_id, body, cont_yn="N", next_key=""):
@@ -744,6 +765,8 @@ def call_kiwoom_api_with_user(user_info, endpoint, api_id, body, cont_yn="N", ne
         "api-id": api_id,
     }
     resp_headers, data = kiwoom_post(KIWOOM_HOST + endpoint, body, headers)
+    # 2026.09.21 조회 응답 검증 (주문 경로는 call_order_api 에서 기존대로 return_msg 를 이력에 남긴다)
+    check_kiwoom_response(data, api_id)
     return {
         "headers": {
             "cont-yn": resp_headers.get("cont-yn"),
@@ -817,6 +840,12 @@ def update_account_evaluation(conn, user_info):
     d2_entra = get_response_value(data, ["d2_entra", "D2_ENTRA"])
     tot_pur_amt = get_response_value(data, ["tot_pur_amt", "TOT_PUR_AMT"])
     prsm_dpst_aset_amt = get_response_value(data, ["prsm_dpst_aset_amt", "PRSM_DPST_ASET_AMT"])
+
+    # 2026.09.21 응답값이 하나도 없으면 기존 예수금/매입금/추정자산을 0으로 덮어쓰지 않고 건너뛴다
+    if not (has_value(d2_entra) and has_value(tot_pur_amt) and has_value(prsm_dpst_aset_amt)):
+        log(f"계좌평가현황 갱신 스킵 - 응답값 없음(기존값 보존) regId={reg_id}")
+        return data
+
     sql, params = query_set_accno_amt(d2_entra, tot_pur_amt, prsm_dpst_aset_amt, reg_id)
     db_write(conn, sql, params, "계좌평가현황 갱신")
     log(f"계좌평가현황 갱신 완료 regId={reg_id}")

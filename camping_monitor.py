@@ -129,10 +129,20 @@ HEADERS = {
 # ── 날짜 / 요일 설정 ────────────────────────────────────────────────────────────
 
 # Python datetime의 weekday() 반환값: 월=0, 화=1, 수=2, 목=3, 금=4, 토=5, 일=6
-DAY_NAMES = {3: "목요일", 4: "금요일", 5: "토요일", 6: "일요일"}
+# 2026.09.22 예외날짜(EXTRA_DATES)가 평일일 수도 있어서 월~일 전부 채움
+DAY_NAMES = {0: "월요일", 1: "화요일", 2: "수요일", 3: "목요일",
+             4: "금요일", 5: "토요일", 6: "일요일"}
 
 # 감시 대상 요일 (목=3, 금=4, 토=5, 일=6)
 TARGET_WEEKDAYS = [3, 4, 5, 6]
+
+# 2026.09.22 예외 감시 날짜 - 평소 감시대상(금/토/일) 외에 특정 날짜만 임시로 추가한다.
+#   - "YYYY-MM-DD" 형식으로 적는다.
+#   - 지난 날짜는 조회 시 자동으로 걸러지므로, 다 지나간 뒤에는 목록을 비워두면 된다.
+EXTRA_DATES = [
+    "2026-09-23",   # 수요일
+    "2026-09-24",   # 목요일
+]
 
 
 # ── 로그 설정 ──────────────────────────────────────────────────────────────────
@@ -301,7 +311,18 @@ def get_next_target_dates(weeks_ahead: int = 2) -> list[datetime.date]:
             for offset in range(3):
                 dates.append(friday + datetime.timedelta(days=offset))
 
-    return dates
+    # 2026.09.22 예외 감시 날짜 병합 - 오늘 이후 날짜만, 중복 제거 후 날짜순 정렬
+    for extra in EXTRA_DATES:
+        try:
+            extra_date = datetime.datetime.strptime(extra.strip(), "%Y-%m-%d").date()
+        except (ValueError, AttributeError):
+            print(f"  [경고] EXTRA_DATES 형식 오류로 건너뜀: {extra}")
+            continue
+
+        if extra_date >= today:
+            dates.append(extra_date)
+
+    return sorted(set(dates))
 
 
 def check_availability(check_date: datetime.date, res_days: int = 1) -> dict | None:

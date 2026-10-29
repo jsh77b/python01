@@ -61,6 +61,15 @@ ST_FAIL   = 'AD_320_14'  # 실패
 # ── Claude CLI 경로 ───────────────────────────────────────────────────────────
 CLAUDE_BIN = "/home/jsh77b/.npm-global/bin/claude"
 
+# ── 배치 자동등록 질문 (사용량 절감: sonnet 모델 + 이전 이력 미첨부) ──────────────
+BATCH_REG_IDS = {
+    "trendSignalBatch",
+    "stockOutlookBatch",
+    "hantoOutlookBatch",
+    "etfCompositionBatch",
+}
+BATCH_MODEL = "sonnet"
+
 # ── 프로젝트별 작업 디렉토리 ──────────────────────────────────────────────────
 PROJECT_DIRS = {
     "python01":       "/workspace/python01",
@@ -225,14 +234,19 @@ def run_batch():
                 in_progress.add(project)
 
                 try:
-                    history = get_history(cursor, project, reg_id)
+                    # 배치 질문은 매번 독립 분석이라 이전 이력 불필요 + sonnet 모델 사용
+                    is_batch = reg_id in BATCH_REG_IDS
+                    history = "" if is_batch else get_history(cursor, project, reg_id)
                     context = CLAUDE_INSTRUCTION + history + f"새 작업: {question}"
+                    cmd = [CLAUDE_BIN, "-p", "--dangerously-skip-permissions"]
+                    if is_batch:
+                        cmd += ["--model", BATCH_MODEL]
 
                     # subprocess 실행 전 DB 재연결 (idle 연결 끊김 방지)
                     conn.ping(reconnect=True)
 
                     result = subprocess.run(
-                        [CLAUDE_BIN, "-p", "--dangerously-skip-permissions"],
+                        cmd,
                         input=context,
                         cwd=cwd,
                         capture_output=True,
